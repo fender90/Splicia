@@ -1,0 +1,8 @@
+bin/
+obj/
+publish/
+dist/
+CrashLogs/
+ffmpeg/*.dll
+ffmpeg/*.exe
+*.user
