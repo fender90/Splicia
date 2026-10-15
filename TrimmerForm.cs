@@ -1608,8 +1608,7 @@ sealed class TrimmerForm : Form
         }
         if (!File.Exists(path))
         {
-            MessageBox.Show(this, $"This file doesn't exist (any more):
-{path}", "Video Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"This file doesn't exist (any more):\n{path}", "Video Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         Playback pb;
