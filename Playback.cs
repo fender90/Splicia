@@ -233,6 +233,7 @@ sealed class Playback : IDisposable
             CrashLog.Write(ex, $"Decoding frame at {r.Time:0.###} s");
             ok = false;
         }
+        f.Exact = r.Kind != Kind.Keyframe || Math.Abs(f.Time - r.Time) < Info.FrameDuration;
         lock (_gate)
         {
             if (!ok) { _pool.Push(f); return; }
@@ -242,7 +243,8 @@ sealed class Playback : IDisposable
     }
 
     int _streamGen;
-    double _streamFrom;
+    double _streamFrom, _backoff;
+    bool _firstVideo;
 
     void StartStream(double from)
     {
@@ -257,6 +259,8 @@ sealed class Playback : IDisposable
         _src.Seek(from);
         _streamFrom = from;
         _audioCursor = from;
+        _firstVideo = true;
+        _backoff = 0;
         _streaming = true;
     }
 
@@ -282,9 +286,25 @@ sealed class Playback : IDisposable
             case MediaSource.Got.Video:
             {
                 double t = _src.VideoTime;
+                if (_firstVideo)
+                {
+                    _firstVideo = false;
+                    // The seek landed on the keyframe after the start (B-frames: its decode time is earlier than its
+                    // display time). Go further back so playback starts on the right frame.
+                    if (t > _streamFrom + Info.FrameDuration * 0.5 && _streamFrom - _backoff > 0.001 && _backoff < 30)
+                    {
+                        _backoff = _backoff == 0 ? 1 : _backoff * 3;
+                        _src.Seek(Math.Max(0, _streamFrom - _backoff));
+                        _audio?.Reset();
+                        _audioCursor = _streamFrom;
+                        _firstVideo = true;
+                        return;
+                    }
+                }
                 if (t < _streamFrom - 1e-4) return; // before the start point (decoding up from the keyframe)
                 var f = Rent();
                 _src.ConvertVideo(f, _size.W, _size.H);
+                f.Exact = true;
                 lock (_gate)
                 {
                     if (_generation != _streamGen) { _pool.Push(f); return; }

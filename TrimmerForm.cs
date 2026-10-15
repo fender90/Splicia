@@ -40,8 +40,8 @@ sealed class TrimmerForm : Form
     int _rot;                    // the user's rotation, clockwise
     bool _loop, _muted, _playing, _stopAtOut;
     float _volume = 1f;
-    Drag _drag;
-    double _dragOffset;
+    Drag _drag, _snap; // _snap: a handle was just released; line its edge up with the exact frame when it arrives
+    double _dragOffset; // pixels from the pointer to the grabbed handle's edge
 
     readonly Font _titleFont = new("Segoe UI Semibold", 12.5f);
     readonly Font _timeFont = new("Segoe UI Semibold", 10.5f);
@@ -522,7 +522,7 @@ sealed class TrimmerForm : Form
 
         // Control panel
         var pr = PanelRect;
-        using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr);
+        using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr, darken: 95); // darker than the other glass: text and trim frame stay legible over bright video
         DrawPanelContents(g, pr);
         if (_hintVisible && _hover != Hit.None && _drag == Drag.None) DrawHint(g, _hover);
     }
@@ -816,7 +816,7 @@ sealed class TrimmerForm : Form
     internal static string Length(double s) => s < 60 ? $"{s:0.00} s" : Fmt(s);
 
     /// <summary>Frosted glass: blurred video behind the shape, a dark tint, a soft top highlight and a hairline border.</summary>
-    void Glass(Graphics g, GraphicsPath path, Rectangle bounds, int tint = 70)
+    void Glass(Graphics g, GraphicsPath path, Rectangle bounds, int tint = 70, int darken = 0)
     {
         var st = g.Save();
         g.SetClip(path, CombineMode.Intersect);
@@ -835,6 +835,7 @@ sealed class TrimmerForm : Form
                 g.DrawImage(_blur, dest, (dest.X - vr.X) * sx, (dest.Y - vr.Y) * sy, dest.Width * sx, dest.Height * sy, GraphicsUnit.Pixel, ia);
             }
         }
+        if (darken > 0) using (var dk = new SolidBrush(C(darken, 8, 10, 16))) g.FillRectangle(dk, bounds);
         using (var t = new SolidBrush(C(tint, 70, 80, 95))) g.FillRectangle(t, bounds);
         using (var hl = new LinearGradientBrush(new Rectangle(bounds.X, bounds.Y - 1, bounds.Width, bounds.Height + 2), W(30), W(6), 90f))
             g.FillRectangle(hl, bounds);
@@ -1157,30 +1158,27 @@ sealed class TrimmerForm : Form
         g.FillPolygon(b, new[] { new PointF(tx, ty), new PointF(tx + d * tw, ty + th / 2), new PointF(tx, ty + th) });
     }
 
-    /// <summary>Rotate: a picture outline with a curved arrow over its corner.</summary>
+    /// <summary>Rotate: a circular arrow (like the app icon), clockwise or mirrored.</summary>
     void RotateGlyph(Graphics g, RectangleF r, Color c, bool clockwise)
     {
-        using var pen = GlyphPen(c, 1.7f);
-        // the picture (a little portrait rectangle, bottom corner)
-        float pw = r.Width * 0.46f, ph = r.Height * 0.6f;
-        float px = clockwise ? r.X + r.Width * 0.06f : r.Right - r.Width * 0.06f - pw, py = r.Bottom - ph;
-        using (var rp = RoundRect(new RectangleF(px, py, pw, ph), P(2))) g.DrawPath(pen, rp);
-        // the arc arrow sweeping over the top
-        float rad = r.Width * 0.42f, cx = clockwise ? r.X + r.Width * 0.36f : r.Right - r.Width * 0.36f, cy = r.Y + r.Height * 0.62f;
+        using var pen = GlyphPen(c, 1.8f);
+        float rad = r.Width * 0.36f, cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2 + r.Height * 0.04f;
         var box = new RectangleF(cx - rad, cy - rad, 2 * rad, 2 * rad);
-        float startAngle = clockwise ? 200 : -20, sweep = clockwise ? 105 : -105;
-        g.DrawArc(pen, box, startAngle, sweep);
-        double end = (startAngle + sweep) * Math.PI / 180;
-        var tip = new PointF(cx + rad * (float)Math.Cos(end), cy + rad * (float)Math.Sin(end));
-        // arrowhead tangent to the arc
-        double dir = end + (clockwise ? Math.PI / 2 : -Math.PI / 2);
-        float a = r.Width * 0.2f;
+        // Gap at the top; the arrowhead sits at the end of the sweep.
+        float start = clockwise ? -55 : -125, sweep = clockwise ? 270 : -270;
+        g.DrawArc(pen, box, start, sweep);
+        double end = (start + sweep) * Math.PI / 180;
+        var tip0 = new PointF(cx + rad * (float)Math.Cos(end), cy + rad * (float)Math.Sin(end));
+        // tangent in the direction of travel
+        float tx = -(float)Math.Sin(end) * (clockwise ? 1 : -1), ty = (float)Math.Cos(end) * (clockwise ? 1 : -1);
+        float nx = (float)Math.Cos(end), ny = (float)Math.Sin(end), a = r.Width * 0.2f;
         using var b = new SolidBrush(c);
-        var p1 = new PointF(tip.X + a * (float)Math.Cos(dir), tip.Y + a * (float)Math.Sin(dir));
-        var nrm = new PointF(-(float)Math.Sin(dir), (float)Math.Cos(dir));
-        var p2 = new PointF(tip.X + nrm.X * a * 0.6f, tip.Y + nrm.Y * a * 0.6f);
-        var p3 = new PointF(tip.X - nrm.X * a * 0.6f, tip.Y - nrm.Y * a * 0.6f);
-        g.FillPolygon(b, new[] { p1, p2, p3 });
+        g.FillPolygon(b, new[]
+        {
+            new PointF(tip0.X + tx * a * 1.05f, tip0.Y + ty * a * 1.05f),
+            new PointF(tip0.X + nx * a * 0.75f - tx * a * 0.1f, tip0.Y + ny * a * 0.75f - ty * a * 0.1f),
+            new PointF(tip0.X - nx * a * 0.75f - tx * a * 0.1f, tip0.Y - ny * a * 0.75f - ty * a * 0.1f),
+        });
     }
 
     void SpeakerGlyph(Graphics g, RectangleF r, Color c, bool muted)
@@ -1351,10 +1349,10 @@ sealed class TrimmerForm : Form
         {
             if (h != Hit.VolSlider) Pause();
             _drag = h switch { Hit.TrimIn => Drag.In, Hit.TrimOut => Drag.Out, Hit.VolSlider => Drag.Volume, _ => Drag.Seek };
-            _dragOffset = _drag == Drag.In ? _in - TimeAt(e.X) : _drag == Drag.Out ? _out - TimeAt(e.X) : 0;
-            // Grabbing a handle by its outer edge shouldn't make it jump; but never offset by more than the handle width.
-            double maxOff = HandleW / Math.Max(1.0, Axis.W) * Duration * 1.5;
-            _dragOffset = Math.Clamp(_dragOffset, -maxOff, maxOff);
+            _snap = Drag.None;
+            // Grabbing a handle anywhere on it shouldn't make it jump: keep the pointer's offset from the edge (in pixels,
+            // so it survives the clamping at the ends of the timeline).
+            _dragOffset = _drag == Drag.In ? X(_in) - e.X : _drag == Drag.Out ? X(_out) - e.X : 0;
             Capture = true;
             DragTo(e.X);
             return;
@@ -1388,12 +1386,12 @@ sealed class TrimmerForm : Form
                 _pb.ShowNear(_pos);
                 break;
             case Drag.In:
-                _in = Math.Clamp(TimeAt(x) + _dragOffset, 0, Math.Max(0, _out - minLen));
+                _in = Math.Clamp(TimeAt(x + (float)_dragOffset), 0, Math.Max(0, _out - minLen));
                 _pos = _in;
                 _pb.ShowNear(_in);
                 break;
             case Drag.Out:
-                _out = Math.Clamp(TimeAt(x) + _dragOffset, Math.Min(Duration, _in + minLen), Duration);
+                _out = Math.Clamp(TimeAt(x + (float)_dragOffset), Math.Min(Duration, _in + minLen), Duration);
                 _pos = Math.Max(_in, _out - 0.001);
                 _pb.ShowNear(_pos);
                 break;
@@ -1418,6 +1416,7 @@ sealed class TrimmerForm : Form
             Capture = false;
             // The exact frame once the pointer is released (scrubbing shows nearby keyframes).
             if (d is Drag.Seek or Drag.In or Drag.Out && _pb != null) _pb.ShowAt(_pos);
+            _snap = d is Drag.In or Drag.Out ? d : Drag.None;
             Invalidate();
             return;
         }
@@ -1605,6 +1604,12 @@ sealed class TrimmerForm : Form
         if (FFmpegRuntime.Load() is string loadError)
         {
             MessageBox.Show(this, loadError, "Video Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        if (!File.Exists(path))
+        {
+            MessageBox.Show(this, $"This file doesn't exist (any more):
+{path}", "Video Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         Playback pb;
@@ -1809,7 +1814,8 @@ sealed class TrimmerForm : Form
                 }
                 else
                 {
-                    var f = _pb.TakeDue(clock);
+                    // Never show the first frame past the end of the selection, even for a moment.
+                    var f = _pb.TakeDue(_stopAtOut ? Math.Min(clock, _out - 0.003) : clock);
                     if (f != null) Present(f, updatePos: true);
                     if (_pb.Ended)
                     {
@@ -1820,7 +1826,17 @@ sealed class TrimmerForm : Form
             }
             else if (_pb.TakeStill() is VideoFrame still)
             {
-                Present(still, updatePos: _drag == Drag.None);
+                bool exact = still.Exact && _drag == Drag.None;
+                Present(still, updatePos: exact);
+                if (exact && _snap != Drag.None)
+                {
+                    // Cuts happen on frame boundaries: the selection starts with the frame shown at its start and ends
+                    // after the frame shown at its end, so the export matches the preview exactly.
+                    if (_snap == Drag.In) _in = Math.Min(still.Time, Math.Max(0, _out - FrameDur * 0.5));
+                    else _out = Math.Clamp(still.Time + FrameDur, _in + FrameDur * 0.5, Duration);
+                    _snap = Drag.None;
+                    Invalidate(PanelRect);
+                }
             }
         }
 

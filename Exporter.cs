@@ -92,9 +92,13 @@ static class Exporter
         var a = new List<string> { "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats" };
         bool audio = s.IncludeAudio && info.HasAudio;
 
+        // Selection edges sit exactly on frame timestamps, which are rarely round decimals. Nudge the start half a
+        // millisecond the safe way so rounding can't move it past a frame: later for copies (so a start that is exactly a
+        // keyframe doesn't pull in the previous one), earlier for re-encodes (so the first frame isn't dropped).
+        const double Nudge = 0.0005;
         if (s.Format == ExportFormat.Original)
         {
-            a.AddRange(new[] { "-ss", S(job.Start) });
+            a.AddRange(new[] { "-ss", S(job.Start + Nudge) });
             // Rotation as a flag on the copied stream: -display_rotation replaces the file's own, so give the total.
             if (job.Rotation != 0) a.AddRange(new[] { "-display_rotation:v:0", (-job.TotalRotation).ToString(Inv) });
             a.AddRange(new[] { "-i", info.Path, "-t", S(job.Length), "-map", "0:v:0" });
@@ -107,7 +111,7 @@ static class Exporter
 
         // Re-encode: seeking before -i decodes from the previous keyframe and drops frames before the start, so the cut
         // is frame-exact. ffmpeg applies the file's own rotation itself (autorotate); the user's goes in the filter.
-        a.AddRange(new[] { "-ss", S(job.Start), "-i", info.Path, "-t", S(job.Length), "-map", "0:v:0" });
+        a.AddRange(new[] { "-ss", S(Math.Max(0, job.Start - Nudge)), "-i", info.Path, "-t", S(job.Length), "-map", "0:v:0" });
         if (audio) a.AddRange(new[] { "-map", "0:a?" });
 
         bool hevc = s.Format == ExportFormat.Hevc;

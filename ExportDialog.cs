@@ -118,10 +118,9 @@ sealed class ExportDialog : PagedWindow
     string OriginalDescription()
     {
         if (_originalBlocked != null) return _originalBlocked;
-        string start = _keyframe is double k && k < _job.Start - 0.01
-            ? $"Starts at the keyframe at {TrimmerForm.Fmt(k)}, slightly before your start."
-            : "Lossless; the start snaps to the nearest keyframe.";
-        return _job.Rotation != 0 ? start + " Rotation is saved as a flag." : "Lossless and very fast. " + start;
+        string start = _keyframe is double k && k < _job.Start - 0.01 ? $"starts at the keyframe at {TrimmerForm.Fmt(k)}" : "starts on a keyframe";
+        string rot = _job.Rotation != 0 ? " Rotation is stored as a tag players follow." : "";
+        return $"Lossless and very fast, but cuts land on keyframes: it {start} and may end a few frames late.{rot}";
     }
 
     void ChooseFileAndStart()

@@ -52,7 +52,7 @@ sealed class ThumbnailStrip : IDisposable
     {
         try
         {
-            using var src = new MediaSource(info.Path, keyframesOnly: true);
+            using var src = new MediaSource(info.Path, keyframesOnly: true, threads: 2);
             double aspect = info.Width * info.Sar / Math.Max(1, info.Height);
             int h = Math.Max(8, height), w = Math.Max(8, (int)Math.Round(h * aspect));
             if (w > 4 * h) { w = 4 * h; } // extreme panoramas: keep tiles reasonable

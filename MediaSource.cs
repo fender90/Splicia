@@ -52,6 +52,8 @@ sealed class VideoFrame
     public int Width, Height;
     public int Stride => Width * 4;
     public double Time;
+    /// <summary>False for the approximate (nearest keyframe) previews shown while scrubbing.</summary>
+    public bool Exact = true;
 
     public void EnsureSize(int w, int h)
     {
@@ -94,7 +96,9 @@ unsafe sealed class MediaSource : IDisposable
 
     /// <param name="keyframesOnly">Decode only keyframes (fast seeking for thumbnails).</param>
     /// <param name="decoders">False opens the container only (for inspecting packets).</param>
-    public MediaSource(string path, bool keyframesOnly = false, bool decoders = true)
+    /// <param name="threads">Video decoder threads (0 = by resolution × frame rate). Frame threading keeps a picture in
+    /// flight per thread, so more threads cost memory (≈25 MB each at 4K) and seek latency.</param>
+    public MediaSource(string path, bool keyframesOnly = false, bool decoders = true, int threads = 0)
     {
         try
         {
@@ -117,11 +121,17 @@ unsafe sealed class MediaSource : IDisposable
 
             if (decoders)
             {
-                _vctx = OpenDecoder(vst, vcodec, video: true);
+                if (threads <= 0)
+                {
+                    // 3 threads for 1080p30, 6 for 4K30, 10 for 4K60
+                    double rate = Q(vst->avg_frame_rate) is > 0 and < 1000 and var r ? r : 30;
+                    threads = (int)Math.Round(2 + (double)par->width * par->height * rate / (1920 * 1080 * 30.0));
+                }
+                _vctx = OpenDecoder(vst, vcodec, video: true, Math.Clamp(threads, 2, Math.Min(12, Environment.ProcessorCount)));
                 if (keyframesOnly) _vctx->skip_frame = AVDiscard.AVDISCARD_NONKEY;
                 if (_ai >= 0)
                 {
-                    try { _actx = OpenDecoder(_fmt->streams[_ai], acodec, video: false); }
+                    try { _actx = OpenDecoder(_fmt->streams[_ai], acodec, video: false, 1); }
                     catch (Exception ex) { CrashLog.Write(ex, "Opening audio decoder (continuing without sound)"); _ai = -1; }
                 }
             }
@@ -172,7 +182,7 @@ unsafe sealed class MediaSource : IDisposable
         }
     }
 
-    static AVCodecContext* OpenDecoder(AVStream* st, AVCodec* codec, bool video)
+    static AVCodecContext* OpenDecoder(AVStream* st, AVCodec* codec, bool video, int threads)
     {
         if (codec == null) codec = avcodec_find_decoder(st->codecpar->codec_id);
         if (codec == null)
@@ -184,7 +194,7 @@ unsafe sealed class MediaSource : IDisposable
             ctx->pkt_timebase = st->time_base;
             if (video)
             {
-                ctx->thread_count = 0; // auto: one per core
+                ctx->thread_count = threads;
                 ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
             }
             Check(avcodec_open2(ctx, codec, null), "Couldn't open the decoder");
@@ -335,44 +345,64 @@ unsafe sealed class MediaSource : IDisposable
             return true;
         }
         bool roll = haveCur && time >= _curTime - Eps && time - _curTime < 2.5;
-        if (!roll) { Seek(time); haveCur = false; }
-        // Rolling forward in "at" mode, the current frame is already a valid candidate (it starts before the target).
-        bool haveCand = roll && !after;
-        if (!haveCand) av_frame_unref(_cur);
-
-        int n = 0;
+        double backoff = 0;
         while (true)
         {
-            if ((++n & 7) == 0 && cancel?.Invoke() == true) return false;
-            var got = Next();
-            if (got == Got.Audio) continue;
-            if (got == Got.End) break;
-            double t = VideoTime;
-            if (t <= time + Eps)
+            if (!roll) Seek(Math.Max(0, time - backoff));
+            // Rolling forward in "at" mode, the current frame is already a valid candidate (it starts before the target).
+            bool haveCand = roll && !after;
+            if (!haveCand) av_frame_unref(_cur);
+            bool first = !roll;
+
+            int n = 0;
+            bool retry = false;
+            while (true)
             {
-                if (after) continue; // not past the current frame yet
-                av_frame_unref(_cur);
-                av_frame_ref(_cur, _vframe);
-                _curTime = t;
-                haveCand = true;
-                continue;
+                if ((++n & 7) == 0 && cancel?.Invoke() == true) return false;
+                var got = Next();
+                if (got == Got.Audio) continue;
+                if (got == Got.End) break;
+                double t = VideoTime;
+                if (first)
+                {
+                    first = false;
+                    // With B-frames a keyframe's decode time is earlier than its display time, so the container can seek
+                    // to the keyframe just *after* the target. Then go further back.
+                    if (t > time + Eps && time - backoff > 0.001 && backoff < 30)
+                    {
+                        backoff = backoff == 0 ? 1 : backoff * 3;
+                        retry = true;
+                        break;
+                    }
+                }
+                if (t <= time + Eps)
+                {
+                    if (after) continue; // not past the current frame yet
+                    av_frame_unref(_cur);
+                    av_frame_ref(_cur, _vframe);
+                    _curTime = t;
+                    haveCand = true;
+                    continue;
+                }
+                // First frame starting after the target.
+                if (after || !haveCand)
+                {
+                    av_frame_unref(_cur);
+                    av_frame_ref(_cur, _vframe);
+                    _curTime = t;
+                }
+                else
+                {
+                    // Keep this next frame for the following step forward.
+                    av_frame_unref(_pushback);
+                    av_frame_ref(_pushback, _vframe);
+                    _pushbackTime = t;
+                }
+                Finish(dst, outW, outH);
+                return true;
             }
-            // First frame starting after the target.
-            if (after || !haveCand)
-            {
-                av_frame_unref(_cur);
-                av_frame_ref(_cur, _vframe);
-                _curTime = t;
-            }
-            else
-            {
-                // Keep this next frame for the following step forward.
-                av_frame_unref(_pushback);
-                av_frame_ref(_pushback, _vframe);
-                _pushbackTime = t;
-            }
-            Finish(dst, outW, outH);
-            return true;
+            if (!retry) break;
+            roll = false;
         }
         if (_cur->buf[0] == null) return false;
         Finish(dst, outW, outH); // end of file: the last frame
