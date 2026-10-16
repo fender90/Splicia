@@ -168,7 +168,8 @@ sealed class OptionCard : DrawnControl
         set { if (_selected == value) return; _selected = value; Invalidate(); SelectedChanged?.Invoke(this, EventArgs.Empty); }
     }
 
-    protected override void OnClick(EventArgs e) { Selected = true; Focus(); base.OnClick(e); }
+    protected override void OnClick(EventArgs e) { if (!Enabled) return; Selected = true; Focus(); base.OnClick(e); }
+    protected override void OnEnabledChanged(EventArgs e) { Cursor = Enabled ? Cursors.Hand : Cursors.Default; base.OnEnabledChanged(e); }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
@@ -181,7 +182,9 @@ sealed class OptionCard : DrawnControl
         var g = e.Graphics;
         PaintBackground(g);
         var r = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
-        Color fill = Selected ? Theme.Blend(Theme.Field, Theme.Accent, 0.13f) : Hover ? Theme.Blend(Theme.Field, Color.White, 0.04f) : Theme.Field;
+        Color fill = !Enabled ? Theme.Blend(Theme.Field, Theme.Bg, 0.6f)
+            : Selected ? Theme.Blend(Theme.Field, Theme.Accent, 0.13f) : Hover ? Theme.Blend(Theme.Field, Color.White, 0.04f) : Theme.Field;
+        Color titleColor = Enabled ? Theme.Fg : Theme.Faint, textColor = Enabled ? Theme.Dim : Theme.Faint;
         using (var path = Theme.Round(r, Px(12)))
         {
             using (var b = new SolidBrush(fill)) g.FillPath(b, path);
@@ -191,12 +194,12 @@ sealed class OptionCard : DrawnControl
 
         // radio dot
         float d = Px(18), rx = Px(18), ry = Px(17);
-        using (var ring = new Pen(Selected ? Theme.Accent : Theme.Dim, Px(1.6f))) g.DrawEllipse(ring, rx, ry, d, d);
+        using (var ring = new Pen(Selected ? Theme.Accent : textColor, Px(1.6f))) g.DrawEllipse(ring, rx, ry, d, d);
         if (Selected) using (var dot = new SolidBrush(Theme.Accent)) g.FillEllipse(dot, rx + d * 0.25f, ry + d * 0.25f, d * 0.5f, d * 0.5f);
 
         int tx = Px(50), ty = Px(13);
         var titleSize = TextRenderer.MeasureText(Title, _title);
-        TextRenderer.DrawText(g, Title, _title, new Point(tx, ty), Theme.Fg, fill);
+        TextRenderer.DrawText(g, Title, _title, new Point(tx, ty), titleColor, fill);
         float after = tx + titleSize.Width + Px(2);
         if (ShowShield)
         {
@@ -208,14 +211,14 @@ sealed class OptionCard : DrawnControl
         {
             var bs = TextRenderer.MeasureText(Badge, _badge);
             var br = new RectangleF(after + Px(4), ty + (titleSize.Height - (bs.Height + Px(4))) / 2f, bs.Width + Px(12), bs.Height + Px(4));
-            var bfill = Theme.Blend(fill, Theme.Accent, 0.25f);
+            var bfill = Theme.Blend(fill, Theme.Accent, Enabled ? 0.25f : 0.08f);
             using (var bp = Theme.Round(br, br.Height / 2))
             using (var bb = new SolidBrush(bfill)) g.FillPath(bb, bp);
-            TextRenderer.DrawText(g, Badge, _badge, Rectangle.Round(br), Theme.AccentHover, bfill,
+            TextRenderer.DrawText(g, Badge, _badge, Rectangle.Round(br), Enabled ? Theme.AccentHover : Theme.Faint, bfill,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         }
         TextRenderer.DrawText(g, Description, _desc, new Rectangle(tx, ty + titleSize.Height + Px(4), Width - tx - Px(18), Height),
-            Theme.Dim, fill, TextFormatFlags.WordBreak);
+            textColor, fill, TextFormatFlags.WordBreak);
     }
 }
 

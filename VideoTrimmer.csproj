@@ -12,7 +12,7 @@
     <Product>Video Trimmer</Product>
     <AssemblyTitle>Video Trimmer</AssemblyTitle>
     <Description>Trim and rotate videos</Description>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <!-- One self-contained exe: the .NET runtime is bundled. FFmpeg ships next to it in the ffmpeg\ folder (the setup exe
          carries it as a payload appended by build.ps1), so nothing is extracted to %TEMP% at startup. -->

@@ -11,12 +11,12 @@ namespace VideoTrimmer;
 /// </summary>
 sealed class TrimmerForm : Form
 {
-    enum Hit { None, Center, Timeline, TrimIn, TrimOut, Play, Prev, Next, SetIn, SetOut, RotL, RotR, Vol, VolSlider, Loop, Full, More, Export, Min, Max, Close }
-    enum Drag { None, Seek, In, Out, Volume }
+    enum Hit { None, Center, Timeline, TrimIn, TrimOut, TrimMove, Play, Prev, Next, SetIn, SetOut, RotL, RotR, Vol, VolSlider, Loop, Full, More, Export, Min, Max, Close }
+    enum Drag { None, Seek, In, Out, Move, Volume }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.Min, Hit.Max, Hit.Close, Hit.TrimIn, Hit.TrimOut, Hit.Timeline, Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut,
+        Hit.Min, Hit.Max, Hit.Close, Hit.TrimIn, Hit.TrimOut, Hit.TrimMove, Hit.Timeline, Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut,
         Hit.RotL, Hit.RotR, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
     };
     const double HideAfterSeconds = 2.5;
@@ -42,6 +42,9 @@ sealed class TrimmerForm : Form
     float _volume = 1f;
     Drag _drag, _snap; // _snap: a handle was just released; line its edge up with the exact frame when it arrives
     double _dragOffset; // pixels from the pointer to the grabbed handle's edge
+    int _dragStartX;
+    double _moveLength;  // selection length while dragging the selection along
+    bool _moved;
 
     readonly Font _titleFont = new("Segoe UI Semibold", 12.5f);
     readonly Font _timeFont = new("Segoe UI Semibold", 10.5f);
@@ -340,7 +343,7 @@ sealed class TrimmerForm : Form
                 float dx = p.X - (c.Left + c.Width / 2f), dy = p.Y - (c.Top + c.Height / 2f);
                 if (dx * dx + dy * dy <= c.Width * c.Width / 4f) return h;
             }
-            else if (h is Hit.TrimIn or Hit.TrimOut)
+            else if (h is Hit.TrimIn or Hit.TrimOut or Hit.TrimMove)
             {
                 if (_info == null) continue;
                 var t = TrimHit(p);
@@ -351,16 +354,35 @@ sealed class TrimmerForm : Form
         return Hit.None;
     }
 
-    /// <summary>Which trim handle (if any) is under <paramref name="p"/>; when they touch, the side of the pointer decides.</summary>
+    /// <summary>
+    /// Which part of the selection frame is under <paramref name="p"/>: a handle (when they touch, the side of the
+    /// pointer decides), or the grip tab / top and bottom bars that move the whole selection.
+    /// </summary>
     Hit TrimHit(Point p)
     {
         var sr = StripRect;
-        if (p.Y < sr.Top - P(8) || p.Y > sr.Bottom + P(8)) return Hit.None;
+        if (p.Y < sr.Top - P(8) || p.Y > sr.Bottom + P(14)) return Hit.None;
         float xi = X(_in), xo = X(_out), hw = HandleW;
+        if (Rectangle.Inflate(Rectangle.Round(GripRect), P(5), P(3)).Contains(p)) return Hit.TrimMove;
+        if (p.Y > sr.Bottom + P(8)) return Hit.None;
         bool onIn = p.X >= xi - hw - P(4) && p.X <= xi + P(3);
         bool onOut = p.X >= xo - P(3) && p.X <= xo + hw + P(4);
         if (onIn && onOut) return p.X < (xi + xo) / 2 ? Hit.TrimIn : Hit.TrimOut;
-        return onIn ? Hit.TrimIn : onOut ? Hit.TrimOut : Hit.None;
+        if (onIn) return Hit.TrimIn;
+        if (onOut) return Hit.TrimOut;
+        bool onBars = p.X > xi && p.X < xo && (p.Y < sr.Top + P(5) || p.Y > sr.Bottom - P(5));
+        return onBars ? Hit.TrimMove : Hit.None;
+    }
+
+    /// <summary>The tab hanging under the middle of the selection, for dragging the selection along.</summary>
+    RectangleF GripRect
+    {
+        get
+        {
+            var sr = StripRect;
+            float w = P(38), h = P(11), cx = (X(_in) + X(_out)) / 2;
+            return new RectangleF(cx - w / 2, sr.Bottom - P(1), w, h);
+        }
     }
 
     RectangleF VideoRectF
@@ -634,6 +656,15 @@ sealed class TrimmerForm : Form
             bool hotIn = _hover == Hit.TrimIn || _drag == Drag.In, hotOut = _hover == Hit.TrimOut || _drag == Drag.Out;
             Chevron(g, xi - hw / 2f, sr.Top + sr.Height / 2f, left: true, hotIn);
             Chevron(g, xo + hw / 2f, sr.Top + sr.Height / 2f, left: false, hotOut);
+
+            // Grip tab for dragging the whole selection
+            bool hotMove = _hover == Hit.TrimMove || _drag == Drag.Move;
+            var grip = GripRect;
+            using (var gp = RoundRect(grip, P(4)))
+            using (var gb = new SolidBrush(hotMove ? C(255, 255, 222, 120) : C(255, TrimColor))) g.FillPath(gb, gp);
+            using var dot = new SolidBrush(C(255, 60, 44, 0));
+            float dr = P(1.6f), dy = grip.Top + grip.Height / 2f + P(0.5f);
+            for (int i = -1; i <= 1; i++) g.FillEllipse(dot, grip.Left + grip.Width / 2f + i * P(6) - dr, dy - dr, 2 * dr, 2 * dr);
         }
 
         // Playhead
@@ -646,11 +677,11 @@ sealed class TrimmerForm : Form
         }
 
         // Time label while dragging
-        if (_drag is Drag.Seek or Drag.In or Drag.Out)
+        if (_drag is Drag.Seek or Drag.In or Drag.Out || _drag == Drag.Move && _moved)
         {
             double t = _drag == Drag.In ? _in : _drag == Drag.Out ? _out : _pos;
-            float x = _drag == Drag.In ? X(_in) : _drag == Drag.Out ? X(_out) : X(_pos);
-            string label = Fmt(t);
+            float x = _drag switch { Drag.In => X(_in), Drag.Out => X(_out), Drag.Move => (X(_in) + X(_out)) / 2, _ => X(_pos) };
+            string label = _drag == Drag.Move ? $"{Fmt(_in)} – {Fmt(_out)}" : Fmt(t);
             var size = g.MeasureString(label, _timeFont);
             var r = new RectangleF(x - size.Width / 2 - P(9), sr.Top - P(12) - size.Height - P(6), size.Width + P(18), size.Height + P(6));
             r.X = Math.Clamp(r.X, PanelRect.Left + P(6), PanelRect.Right - P(6) - r.Width);
@@ -763,6 +794,7 @@ sealed class TrimmerForm : Form
         Hit.Export => "Export the selection  (Ctrl+E)",
         Hit.TrimIn => "Drag to set the start",
         Hit.TrimOut => "Drag to set the end",
+        Hit.TrimMove => "Drag to move the selection",
         _ => null,
     };
 
@@ -770,7 +802,8 @@ sealed class TrimmerForm : Form
     {
         if (HintText(h) is not string text) return;
         var anchor = h is Hit.TrimIn ? new RectangleF(X(_in) - HandleW, StripRect.Top, HandleW, 1)
-            : h is Hit.TrimOut ? new RectangleF(X(_out), StripRect.Top, HandleW, 1) : Rect(h);
+            : h is Hit.TrimOut ? new RectangleF(X(_out), StripRect.Top, HandleW, 1)
+            : h is Hit.TrimMove ? new RectangleF((X(_in) + X(_out)) / 2, StripRect.Top, 1, 1) : Rect(h);
         if (h is Hit.Min or Hit.Max or Hit.Close or Hit.Timeline or Hit.Center) return;
         var size = g.MeasureString(text, _smallFont);
         var r = new RectangleF(anchor.X + anchor.Width / 2 - size.Width / 2 - P(10), anchor.Top - P(10) - size.Height - P(8),
@@ -1329,7 +1362,8 @@ sealed class TrimmerForm : Form
             _hoverSince = Now;
             _hintVisible = false;
         }
-        Cursor = h is Hit.TrimIn or Hit.TrimOut ? Cursors.SizeWE : h != Hit.None ? Cursors.Hand : _zoom > 1f ? Cursors.SizeAll : Cursors.Default;
+        Cursor = h is Hit.TrimIn or Hit.TrimOut ? Cursors.SizeWE : h == Hit.TrimMove ? Cursors.SizeAll
+            : h != Hit.None ? Cursors.Hand : _zoom > 1f ? Cursors.SizeAll : Cursors.Default;
     }
 
     protected override void OnMouseLeave(EventArgs e)
@@ -1345,16 +1379,22 @@ sealed class TrimmerForm : Form
         var h = HitTest(e.Location);
         if (h != Hit.None) Activity();
         _hintVisible = false;
-        if (_info != null && h is Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.VolSlider)
+        if (_info != null && h is Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove or Hit.VolSlider)
         {
             if (h != Hit.VolSlider) Pause();
-            _drag = h switch { Hit.TrimIn => Drag.In, Hit.TrimOut => Drag.Out, Hit.VolSlider => Drag.Volume, _ => Drag.Seek };
+            _drag = h switch
+            {
+                Hit.TrimIn => Drag.In, Hit.TrimOut => Drag.Out, Hit.TrimMove => Drag.Move, Hit.VolSlider => Drag.Volume, _ => Drag.Seek,
+            };
             _snap = Drag.None;
-            // Grabbing a handle anywhere on it shouldn't make it jump: keep the pointer's offset from the edge (in pixels,
-            // so it survives the clamping at the ends of the timeline).
-            _dragOffset = _drag == Drag.In ? X(_in) - e.X : _drag == Drag.Out ? X(_out) - e.X : 0;
+            // Grabbing a handle (or the selection) anywhere on it shouldn't make it jump: keep the pointer's offset from
+            // the edge, in pixels so it survives the clamping at the ends of the timeline.
+            _dragOffset = _drag is Drag.In or Drag.Move ? X(_in) - e.X : _drag == Drag.Out ? X(_out) - e.X : 0;
+            _dragStartX = e.X;
+            _moveLength = _out - _in;
+            _moved = false;
             Capture = true;
-            DragTo(e.X);
+            if (_drag != Drag.Move) DragTo(e.X); // a move starts only once the pointer actually moves
             return;
         }
         _pressed = h;
@@ -1395,6 +1435,15 @@ sealed class TrimmerForm : Form
                 _pos = Math.Max(_in, _out - 0.001);
                 _pb.ShowNear(_pos);
                 break;
+            case Drag.Move:
+                if (!_moved && Math.Abs(x - _dragStartX) < SystemInformation.DragSize.Width) return;
+                _moved = true;
+                // Same length, new place: the preview follows the start of the selection.
+                _in = Math.Clamp(TimeAt(x + (float)_dragOffset), 0, Math.Max(0, Duration - _moveLength));
+                _out = Math.Min(Duration, _in + _moveLength);
+                _pos = _in;
+                _pb.ShowNear(_in);
+                break;
             case Drag.Volume:
             {
                 var r = Rect(Hit.VolSlider);
@@ -1414,9 +1463,15 @@ sealed class TrimmerForm : Form
             var d = _drag;
             _drag = Drag.None;
             Capture = false;
+            if (d == Drag.Move && !_moved)
+            {
+                // A click on the selection's grip or bars (no drag): move the playhead there, like the rest of the strip.
+                d = Drag.Seek;
+                _pos = TimeAt(e.X);
+            }
             // The exact frame once the pointer is released (scrubbing shows nearby keyframes).
-            if (d is Drag.Seek or Drag.In or Drag.Out && _pb != null) _pb.ShowAt(_pos);
-            _snap = d is Drag.In or Drag.Out ? d : Drag.None;
+            if (d is Drag.Seek or Drag.In or Drag.Out or Drag.Move && _pb != null) _pb.ShowAt(_pos);
+            _snap = d is Drag.In or Drag.Out or Drag.Move ? d : Drag.None;
             Invalidate();
             return;
         }
@@ -1482,7 +1537,7 @@ sealed class TrimmerForm : Form
         if (h == Hit.None) return;
         var r = h switch
         {
-            Hit.Timeline or Hit.TrimIn or Hit.TrimOut => PanelRect,
+            Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove => PanelRect,
             Hit.Min or Hit.Max or Hit.Close => WindowButtonsRect,
             _ => Rect(h),
         };
@@ -1563,7 +1618,7 @@ sealed class TrimmerForm : Form
         _menu.Items.Add(Item((_loop ? "✓  " : "     ") + "Loop selection", () => _loop = !_loop, null, has));
         _menu.Items.Add(Item("Reset zoom", ResetZoom, "Ctrl+0", _zoom > 1f));
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(Item("Keyboard shortcuts", () => { using var dlg = new ShortcutsDialog(); dlg.ShowDialog(this); }));
+        _menu.Items.Add(Item("Keyboard shortcuts", () => { RevealCursor(); using var dlg = new ShortcutsDialog(); dlg.ShowDialog(this); }));
         _menu.Items.Add(Item("Open crash log folder", CrashLog.OpenFolder));
     }
 
@@ -1593,6 +1648,7 @@ sealed class TrimmerForm : Form
 
     void OpenDialog()
     {
+        RevealCursor();
         using var dlg = new OpenFileDialog { Filter = VideoFilter, Title = "Open a video" };
         if (_info != null) dlg.InitialDirectory = Path.GetDirectoryName(_info.Path);
         if (dlg.ShowDialog(this) == DialogResult.OK) Open(dlg.FileName);
@@ -1719,9 +1775,18 @@ sealed class TrimmerForm : Form
         if (_info == null || _pb == null) return;
         if (_playing) Pause();
         var job = new TrimJob(_info, _in, _out, _rot);
+        RevealCursor();
         using var dlg = new ExportDialog(job);
         dlg.ShowDialog(this);
         Activity();
+    }
+
+    /// <summary>Undoes the idle cursor hiding right away (before a dialog opens over this window).</summary>
+    void RevealCursor()
+    {
+        if (!_cursorHidden) return;
+        _cursorHidden = false;
+        Cursor.Show();
     }
 
     // ───────────────────────── playback ─────────────────────────
@@ -1832,7 +1897,14 @@ sealed class TrimmerForm : Form
                     // Cuts happen on frame boundaries: the selection starts with the frame shown at its start and ends
                     // after the frame shown at its end, so the export matches the preview exactly.
                     if (_snap == Drag.In) _in = Math.Min(still.Time, Math.Max(0, _out - FrameDur * 0.5));
-                    else _out = Math.Clamp(still.Time + FrameDur, _in + FrameDur * 0.5, Duration);
+                    else if (_snap == Drag.Out) _out = Math.Clamp(still.Time + FrameDur, _in + FrameDur * 0.5, Duration);
+                    else
+                    {
+                        // Moved: the start lands on the frame shown, the length is kept.
+                        double len = _out - _in;
+                        _in = still.Time;
+                        _out = Math.Min(Duration, _in + len);
+                    }
                     _snap = Drag.None;
                     Invalidate(PanelRect);
                 }
@@ -1854,7 +1926,8 @@ sealed class TrimmerForm : Form
         //  • always shown with no file open, while dragging on the timeline, or with the menu open
         //  • stays up while the mouse rests on the (still visible) panel or window buttons
         var mouse = PointToClient(MousePosition);
-        bool mouseInside = ClientRectangle.Contains(mouse);
+        // Over this window itself, not over a dialog, menu or other window that happens to sit on top of it.
+        bool mouseInside = ClientRectangle.Contains(mouse) && WindowFromPoint(MousePosition) == Handle;
         if (_info != null && !mouseInside && _drag == Drag.None && !_menu.Visible) HideOverlayNow();
         bool restingOnUi = _ui > 0f && !_panning && (PanelRect.Contains(mouse) || WindowButtonsRect.Contains(mouse));
         bool show = _info == null || _drag != Drag.None || _menu.Visible || restingOnUi || Now - _lastActivity < HideAfterSeconds;
@@ -1865,7 +1938,9 @@ sealed class TrimmerForm : Form
             if (_ui == 0f && _hover != Hit.None) { _hover = Hit.None; _hintVisible = false; }
             Invalidate();
         }
-        bool hideCursor = _ui == 0f && mouseInside && !_dragArmed;
+        // Cursor.Hide() hides the pointer for every window of the app (the export window included), so only while
+        // this window is the active one and the pointer is over it.
+        bool hideCursor = _ui == 0f && mouseInside && !_dragArmed && ActiveForm == this;
         if (hideCursor != _cursorHidden)
         {
             _cursorHidden = hideCursor;
@@ -1907,6 +1982,7 @@ sealed class TrimmerForm : Form
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
     [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point pt);
     [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint uPeriod);
     [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint uPeriod);
 }

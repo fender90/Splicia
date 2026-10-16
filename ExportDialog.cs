@@ -8,7 +8,7 @@ namespace VideoTrimmer;
 /// </summary>
 sealed class ExportDialog : PagedWindow
 {
-    const int WinW = 600, WinH = 668, Gutter = 44, PageTop = 58, PageBottom = 30;
+    const int WinW = 600, WinH = 732, Gutter = 44, PageTop = 58, PageBottom = 30;
 
     readonly TrimJob _job;
     readonly MediaInfo _info;
@@ -16,7 +16,8 @@ sealed class ExportDialog : PagedWindow
     readonly string? _originalBlocked;    // why "Original" can't be used
     ExportFormat _format;
     ExportQuality _quality = ExportQuality.High;
-    bool _audio;
+    bool _audio, _boomerang;
+    int _repeats = 1;
     Exporter.HwEncoder? _hw;
     OptionCard? _hevcCard;
 
@@ -60,6 +61,19 @@ sealed class ExportDialog : PagedWindow
         return $"{TrimmerForm.Fmt(_job.Start)} → {TrimmerForm.Fmt(_job.End)}  ·  {TrimmerForm.Length(_job.Length)}  ·  {w}×{h}{rot}";
     }
 
+    /// <summary>Length of the exported video: the selection, or forwards + backwards (minus the two turn frames) × repeats.</summary>
+    double ResultLength()
+    {
+        if (!_boomerang) return _job.Length;
+        double fd = _info.FrameDuration;
+        int n = Math.Max(1, (int)Math.Round(_job.Length / fd));
+        return (n + Math.Max(0, n - 2)) * fd * _repeats;
+    }
+
+    string BoomerangDescription() => _repeats == 1
+        ? $"Plays forwards, then backwards: {TrimmerForm.Length(ResultLength())}"
+        : $"Forwards, then backwards, {_repeats} times: {TrimmerForm.Length(ResultLength())}";
+
     // ───────────────────────── 1. options ─────────────────────────
 
     void ShowOptions(string? note)
@@ -82,8 +96,26 @@ sealed class ExportDialog : PagedWindow
         quality.SelectedIndex = (int)_quality;
         quality.SelectedChanged += (_, _) => _quality = (ExportQuality)quality.SelectedIndex;
 
+        // Back-and-forth loop, with how many times to repeat it on the same row
+        var loop = AddControl(new ToggleSwitch("Back-and-forth loop", _boomerang, BoomerangDescription()), P(46), 20);
+        int segW = P(200);
+        var repeats = new Segmented("1×", "2×", "3×", "4×")
+        {
+            Bounds = new Rectangle(Page.Width - segW, loop.Top + P(4), segW, P(32)),
+            SelectedIndex = _repeats - 1,
+            Enabled = _boomerang,
+        };
+        Page.Controls.Add(repeats);
+        loop.Width = Page.Width - segW - P(12);
+        repeats.SelectedChanged += (_, _) =>
+        {
+            _repeats = repeats.SelectedIndex + 1;
+            loop.Description = BoomerangDescription();
+            loop.Invalidate();
+        };
+
         var sound = AddControl(new ToggleSwitch(_info.HasAudio ? "Include sound" : "Include sound (this video has none)",
-            _audio && _info.HasAudio), P(28), 20);
+            _audio && _info.HasAudio), P(28), 14);
         sound.Enabled = _info.HasAudio;
         sound.CheckedChanged += (_, _) => _audio = sound.Checked;
 
@@ -96,8 +128,24 @@ sealed class ExportDialog : PagedWindow
             foreach (var (card, fmt) in cards) card.Selected = fmt == f;
             quality.Enabled = f != ExportFormat.Original;
         }
+        // Playing backwards means re-encoding, so the loop and "Original" exclude each other.
+        void UpdateOriginal()
+        {
+            original.Enabled = _originalBlocked == null && !_boomerang;
+            original.Description = _boomerang ? "A back-and-forth loop needs re-encoding: choose H.264 or HEVC." : OriginalDescription();
+            if (!original.Enabled && _format == ExportFormat.Original) Select(ExportFormat.H264);
+        }
+        loop.CheckedChanged += (_, _) =>
+        {
+            _boomerang = loop.Checked;
+            repeats.Enabled = _boomerang;
+            loop.Description = BoomerangDescription();
+            loop.Invalidate();
+            UpdateOriginal();
+        };
         foreach (var (card, fmt) in cards) card.SelectedChanged += (_, _) => { if (card.Selected) Select(fmt); };
-        Select(_format == ExportFormat.Original && _originalBlocked != null ? ExportFormat.H264 : _format);
+        Select(_format == ExportFormat.Original && (_originalBlocked != null || _boomerang) ? ExportFormat.H264 : _format);
+        UpdateOriginal();
 
         Footer(new[] { Button("Cancel", PillButton.Kind.Ghost, TryClose) }, Button("Export…", PillButton.Kind.Primary, ChooseFileAndStart));
     }
@@ -126,7 +174,7 @@ sealed class ExportDialog : PagedWindow
     void ChooseFileAndStart()
     {
         string ext = _format == ExportFormat.Original ? Exporter.OriginalExtension(_info) : ".mp4";
-        string suggested = Exporter.SuggestOutput(_info, ext);
+        string suggested = Exporter.SuggestOutput(_info, ext, _boomerang ? "loop" : "trimmed");
         using var dlg = new SaveFileDialog
         {
             Title = "Export video",
@@ -144,7 +192,7 @@ sealed class ExportDialog : PagedWindow
             ShowInlineError("Choose a different file name: the export can't replace the video it's made from.");
             return;
         }
-        Start(new ExportSettings(_format, _quality, _audio && _info.HasAudio, output));
+        Start(new ExportSettings(_format, _quality, _audio && _info.HasAudio, output, _boomerang, _repeats));
     }
 
     // ───────────────────────── 2. progress ─────────────────────────
@@ -160,6 +208,7 @@ sealed class ExportDialog : PagedWindow
             settings.Format == ExportFormat.Hevc && _hw != null && (!(_info.BitDepth > 8 || _info.IsHdr) || _hw.TenBit)
                 ? $"Encoding HEVC on your {_hw.Vendor} graphics." : $"Encoding {(settings.Format == ExportFormat.Hevc ? "HEVC" : "H.264")}.",
             Small, Theme.Faint, 4);
+        if (settings.Boomerang) _status.Text = "Making the back-and-forth loop. " + _status.Text;
         Footer(null, Button("Cancel", PillButton.Kind.Secondary, () => _cts?.Cancel()));
 
         _cts = new CancellationTokenSource();
@@ -223,7 +272,7 @@ sealed class ExportDialog : PagedWindow
         string size = "";
         try { size = FormatSize(new FileInfo(s.OutputPath).Length) + "  ·  "; } catch { }
         AddText(Path.GetFileName(s.OutputPath), Body, Theme.Fg, 8);
-        AddText($"{size}{TrimmerForm.Length(_job.Length)}  ·  in {Path.GetDirectoryName(s.OutputPath)}", Small, Theme.Dim, 4);
+        AddText($"{size}{TrimmerForm.Length(ResultLength())}  ·  in {Path.GetDirectoryName(s.OutputPath)}", Small, Theme.Dim, 4);
         Footer(new[]
             {
                 Button("Show in folder", PillButton.Kind.Ghost, () => Shell("explorer.exe", $"/select,\"{s.OutputPath}\"")),

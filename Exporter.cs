@@ -7,7 +7,9 @@ namespace VideoTrimmer;
 enum ExportFormat { H264, Hevc, Original }
 enum ExportQuality { High, Balanced, Small }
 
-sealed record ExportSettings(ExportFormat Format, ExportQuality Quality, bool IncludeAudio, string OutputPath);
+/// <param name="Boomerang">Back-and-forth loop: the selection forwards, then backwards, <paramref name="Repeats"/> times.</param>
+sealed record ExportSettings(ExportFormat Format, ExportQuality Quality, bool IncludeAudio, string OutputPath,
+    bool Boomerang = false, int Repeats = 1);
 
 /// <summary>A trim of one file: the selected range and the extra clockwise rotation to apply.</summary>
 sealed record TrimJob(MediaInfo Info, double Start, double End, int Rotation)
@@ -86,39 +88,44 @@ static class Exporter
 
     // ───────────────────────── command line ─────────────────────────
 
-    public static string Arguments(TrimJob job, ExportSettings s, HwEncoder? hw)
+    // Selection edges sit exactly on frame timestamps, and containers store those rounded (Matroska to whole
+    // milliseconds), so a cut placed right on a frame can land on either side of it. Re-encodes therefore cut halfway
+    // between frames: the seek point moves back half a frame and the length stays, which puts the end cut halfway too.
+    // Copies seek half a millisecond late instead, so a start that is exactly a keyframe doesn't pull in the previous one.
+    const double Nudge = 0.0005;
+
+    static double CutPoint(MediaInfo info, double t) => Math.Max(0, t - info.FrameDuration / 2);
+
+    // ffmpeg decodes with one thread per CPU core by default, each holding frames: gigabytes for 4K on a big CPU.
+    // Eight keep decoding well ahead of the encoder.
+    static readonly string[] DecoderThreads = { "-threads", "8" };
+
+    /// <summary>
+    /// Input options and trim filters that select exactly [<paramref name="from"/>, <paramref name="to"/>): the input
+    /// stops a frame after the end (input-side -t, so a reverse filter sees no more than that), and trim / atrim cut
+    /// halfway between frames. Filter timestamps count from the seek point.
+    /// </summary>
+    static (string[] Input, string VideoTrim, string AudioTrim) Window(MediaInfo info, double from, double to)
+    {
+        double seek = CutPoint(info, from), start = from - seek, end = to - seek;
+        string[] input = { "-ss", S(seek), "-t", S(end + info.FrameDuration) };
+        return (input, $"trim=end={S(end)},setpts=PTS-STARTPTS", $"atrim=start={S(start)}:end={S(end)},asetpts=PTS-STARTPTS");
+    }
+
+    static List<string> Common() => new() { "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats" };
+
+    /// <summary>How the picture is re-encoded: the filter chain, the encoder arguments, and bytes per pixel of the frames.</summary>
+    sealed record VideoEncoding(List<string> Filters, List<string> Codec, double BytesPerPixel, bool Hevc);
+
+    static VideoEncoding EncodingFor(TrimJob job, ExportSettings s, HwEncoder? hw)
     {
         var info = job.Info;
-        var a = new List<string> { "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats" };
-        bool audio = s.IncludeAudio && info.HasAudio;
-
-        // Selection edges sit exactly on frame timestamps, which are rarely round decimals. Nudge the start half a
-        // millisecond the safe way so rounding can't move it past a frame: later for copies (so a start that is exactly a
-        // keyframe doesn't pull in the previous one), earlier for re-encodes (so the first frame isn't dropped).
-        const double Nudge = 0.0005;
-        if (s.Format == ExportFormat.Original)
-        {
-            a.AddRange(new[] { "-ss", S(job.Start + Nudge) });
-            // Rotation as a flag on the copied stream: -display_rotation replaces the file's own, so give the total.
-            if (job.Rotation != 0) a.AddRange(new[] { "-display_rotation:v:0", (-job.TotalRotation).ToString(Inv) });
-            a.AddRange(new[] { "-i", info.Path, "-t", S(job.Length), "-map", "0:v:0" });
-            if (audio) a.AddRange(new[] { "-map", "0:a?" });
-            a.AddRange(new[] { "-c", "copy", "-avoid_negative_ts", "make_zero", "-map_metadata", "0" });
-            if (IsMp4Family(s.OutputPath)) a.AddRange(new[] { "-movflags", "+faststart" });
-            a.Add(s.OutputPath);
-            return Join(a);
-        }
-
-        // Re-encode: seeking before -i decodes from the previous keyframe and drops frames before the start, so the cut
-        // is frame-exact. ffmpeg applies the file's own rotation itself (autorotate); the user's goes in the filter.
-        a.AddRange(new[] { "-ss", S(Math.Max(0, job.Start - Nudge)), "-i", info.Path, "-t", S(job.Length), "-map", "0:v:0" });
-        if (audio) a.AddRange(new[] { "-map", "0:a?" });
-
         bool hevc = s.Format == ExportFormat.Hevc;
         bool keepHdr = hevc && info.IsHdr;
         bool tenBit = hevc && (info.BitDepth > 8 || info.IsHdr);
         bool useHw = hevc && hw != null && (!tenBit || hw.TenBit);
 
+        // ffmpeg applies the file's own rotation itself (autorotate); the user's goes in the filter chain.
         var filters = new List<string>();
         if (info.IsHdr && !keepHdr)
             // HDR → SDR (BT.709) so the H.264 file doesn't look washed out.
@@ -132,8 +139,8 @@ static class Exporter
         // 4:2:0 needs even dimensions.
         filters.Add("crop=trunc(iw/2)*2:trunc(ih/2)*2");
         filters.Add($"format={(tenBit ? (useHw ? "p010le" : "yuv420p10le") : (useHw ? "nv12" : "yuv420p"))}");
-        a.AddRange(new[] { "-vf", string.Join(",", filters) });
 
+        var a = new List<string>();
         int q = s.Quality switch { ExportQuality.High => 0, ExportQuality.Balanced => 1, _ => 2 };
         if (!hevc)
         {
@@ -164,9 +171,91 @@ static class Exporter
         if (hevc) a.AddRange(new[] { "-tag:v", "hvc1" });
         if (keepHdr)
             a.AddRange(new[] { "-color_primaries", info.ColorPrimaries, "-color_trc", info.ColorTransfer, "-colorspace", info.ColorSpace });
+        return new VideoEncoding(filters, a, tenBit ? 3 : 1.5, hevc);
+    }
 
-        if (audio) a.AddRange(new[] { "-c:a", "aac", "-b:a", q == 2 ? "128k" : "192k" });
+    static string AudioBitrate(ExportSettings s) => s.Quality == ExportQuality.Small ? "128k" : "192k";
+
+    /// <summary>The ffmpeg command line for a plain (single-pass) export.</summary>
+    public static string Arguments(TrimJob job, ExportSettings s, HwEncoder? hw)
+    {
+        var info = job.Info;
+        var a = Common();
+        bool audio = s.IncludeAudio && info.HasAudio;
+
+        if (s.Format == ExportFormat.Original)
+        {
+            a.AddRange(new[] { "-ss", S(job.Start + Nudge) });
+            // Rotation as a flag on the copied stream: -display_rotation replaces the file's own, so give the total.
+            if (job.Rotation != 0) a.AddRange(new[] { "-display_rotation:v:0", (-job.TotalRotation).ToString(Inv) });
+            a.AddRange(new[] { "-i", info.Path, "-t", S(job.Length), "-map", "0:v:0" });
+            if (audio) a.AddRange(new[] { "-map", "0:a?" });
+            a.AddRange(new[] { "-c", "copy", "-avoid_negative_ts", "make_zero", "-map_metadata", "0" });
+            if (IsMp4Family(s.OutputPath)) a.AddRange(new[] { "-movflags", "+faststart" });
+            a.Add(s.OutputPath);
+            return Join(a);
+        }
+
+        // Re-encode: seeking before -i decodes from the previous keyframe and drops frames before the start, so the cut
+        // is frame-exact.
+        var enc = EncodingFor(job, s, hw);
+        var (input, vtrim, atrim) = Window(info, job.Start, job.End);
+        a.AddRange(DecoderThreads);
+        a.AddRange(input);
+        a.AddRange(new[] { "-i", info.Path, "-map", "0:v:0" });
+        if (audio) a.AddRange(new[] { "-map", "0:a?" });
+        a.AddRange(new[] { "-vf", string.Join(",", enc.Filters.Prepend(vtrim)) });
+        a.AddRange(enc.Codec);
+        if (audio) a.AddRange(new[] { "-af", atrim, "-c:a", "aac", "-b:a", AudioBitrate(s) });
         a.AddRange(new[] { "-map_metadata", "0", "-movflags", "+faststart", s.OutputPath });
+        return Join(a);
+    }
+
+    /// <summary>One video-only piece of a back-and-forth export: [<paramref name="from"/>, <paramref name="to"/>), maybe reversed.</summary>
+    static string PieceArguments(TrimJob job, VideoEncoding enc, double from, double to, bool reverse, string output)
+    {
+        var a = Common();
+        // The reverse filter waits for the end of its input, so the input must stop at the piece (see Window).
+        var (input, vtrim, _) = Window(job.Info, from, to);
+        a.AddRange(DecoderThreads);
+        a.AddRange(input);
+        a.AddRange(new[] { "-i", job.Info.Path, "-map", "0:v:0", "-an" });
+        var filters = new List<string> { vtrim };
+        filters.AddRange(enc.Filters);
+        if (reverse) filters.Add("reverse"); // last, so it holds frames in the (smallest) output format
+        a.AddRange(new[] { "-vf", string.Join(",", filters) });
+        a.AddRange(enc.Codec);
+        a.Add(output);
+        return Join(a);
+    }
+
+    /// <summary>
+    /// The sound of a back-and-forth export in one file: forwards, then the stretch the backwards picture covers played
+    /// backwards, all repeated. (Audio is small, so ffmpeg can hold it in memory.)
+    /// </summary>
+    static string SoundArguments(TrimJob job, ExportSettings s, double backFrom, double backTo, string output)
+    {
+        var a = Common();
+        // Input-side -t: the output is longer than the selection.
+        double seek = CutPoint(job.Info, job.Start), off = job.Start - seek; // timestamps start at the seek point
+        a.AddRange(new[] { "-ss", S(seek), "-t", S(job.Length + off + job.Info.FrameDuration), "-i", job.Info.Path, "-vn" });
+        var g = new StringBuilder();
+        string forwards = $"atrim=start={S(off)}:end={S(off + job.Length)},asetpts=PTS-STARTPTS";
+        if (backTo - backFrom > 0.001)
+            g.Append($"[0:a:0]asplit=2[s][b];[s]{forwards}[f];[b]atrim=start={S(backFrom - seek)}:end={S(backTo - seek)},asetpts=PTS-STARTPTS,areverse[r];" +
+                     "[f][r]concat=n=2:v=0:a=1[c]");
+        else
+            g.Append($"[0:a:0]{forwards}[c]");
+        if (s.Repeats > 1)
+        {
+            g.Append($";[c]asplit={s.Repeats}");
+            for (int i = 0; i < s.Repeats; i++) g.Append($"[c{i}]");
+            g.Append(';');
+            for (int i = 0; i < s.Repeats; i++) g.Append($"[c{i}]");
+            g.Append($"concat=n={s.Repeats}:v=0:a=1[a]");
+        }
+        else g.Append(";[c]anull[a]");
+        a.AddRange(new[] { "-filter_complex", g.ToString(), "-map", "[a]", "-c:a", "aac", "-b:a", AudioBitrate(s), output });
         return Join(a);
     }
 
@@ -196,11 +285,104 @@ static class Exporter
 
     /// <summary>
     /// Runs the export. <paramref name="progress"/> gets 0..1. Throws <see cref="OperationCanceledException"/> when
-    /// cancelled (the partial file is deleted) and <see cref="InvalidOperationException"/> with ffmpeg's message on failure.
+    /// cancelled and <see cref="InvalidOperationException"/> with ffmpeg's message on failure; either way the partial file
+    /// is deleted.
     /// </summary>
     public static async Task RunAsync(TrimJob job, ExportSettings s, HwEncoder? hw, Action<double> progress, CancellationToken ct)
     {
-        string args = Arguments(job, s, hw);
+        try
+        {
+            if (s.Boomerang) await RunBoomerangAsync(job, s with { Format = s.Format == ExportFormat.Original ? ExportFormat.H264 : s.Format }, hw, progress, ct);
+            // Copies start at the keyframe before the start point, so their output runs a little longer.
+            else await RunFfmpegAsync(Arguments(job, s, hw), Math.Max(0.001, job.Length), progress, ct);
+        }
+        catch
+        {
+            TryDelete(s.OutputPath);
+            throw;
+        }
+    }
+
+    /// <summary>Memory the reverse filter may use for one piece; frames beyond it go into further pieces.</summary>
+    const double ReverseBudgetBytes = 300e6;
+
+    /// <summary>
+    /// Back-and-forth loop. FFmpeg's reverse filter keeps every frame in memory (gigabytes for a few seconds of 4K), so
+    /// the backwards half is made in short pieces: the selection forwards, then the pieces of the backwards part from the
+    /// last one to the first, each reversed on its own. The pieces share encoder settings, so they're joined without
+    /// re-encoding, repeated as asked, with the sound (made separately) laid underneath. Work files go in a hidden
+    /// folder next to the output and are removed afterwards.
+    /// </summary>
+    static async Task RunBoomerangAsync(TrimJob job, ExportSettings s, HwEncoder? hw, Action<double> progress, CancellationToken ct)
+    {
+        var info = job.Info;
+        double fd = info.FrameDuration;
+        var enc = EncodingFor(job, s, hw);
+
+        // Backwards without the selection's first and last frames: they'd otherwise show twice at each turn.
+        double backFrom = job.Start + fd, backTo = job.End - fd;
+        var pieces = new List<(double From, double To, bool Reverse)> { (job.Start, job.End, false) };
+        if (backTo - backFrom > fd * 0.5)
+        {
+            var (w, h) = info.DisplaySize(job.Rotation);
+            int perPiece = (int)Math.Clamp(ReverseBudgetBytes / (w * (double)h * enc.BytesPerPixel), 8, 240);
+            var back = new List<(double, double, bool)>();
+            for (double t = backFrom; t < backTo - fd * 0.5; t += perPiece * fd) back.Add((t, Math.Min(t + perPiece * fd, backTo), true));
+            back.Reverse();
+            pieces.AddRange(back);
+        }
+        double cycle = pieces.Sum(p => p.To - p.From);
+        bool sound = s.IncludeAudio && info.HasAudio;
+
+        string dir = Path.GetDirectoryName(Path.GetFullPath(s.OutputPath))!;
+        var work = Directory.CreateDirectory(Path.Combine(dir, $".videotrimmer-{Guid.NewGuid():N}"));
+        work.Attributes |= FileAttributes.Hidden;
+        try
+        {
+            // 92% of the bar for the pictures (by duration), then the sound, then the join.
+            var names = new List<string>();
+            double done = 0;
+            for (int i = 0; i < pieces.Count; i++)
+            {
+                var (from, to, reverse) = pieces[i];
+                string name = $"piece{i:000}.mp4";
+                double before = done, len = to - from;
+                await RunFfmpegAsync(PieceArguments(job, enc, from, to, reverse, Path.Combine(work.FullName, name)), len,
+                    f => progress(0.92 * (before + f * len) / cycle), ct);
+                done += len;
+                names.Add(name);
+            }
+            if (sound)
+                await RunFfmpegAsync(SoundArguments(job, s, backFrom, backTo, Path.Combine(work.FullName, "sound.m4a")),
+                    cycle * s.Repeats, f => progress(0.92 + 0.04 * f), ct);
+
+            string list = Path.Combine(work.FullName, "pieces.txt");
+            File.WriteAllLines(list, Enumerable.Range(0, Math.Max(1, s.Repeats)).SelectMany(_ => names).Select(n => $"file '{n}'"));
+            var a = Common();
+            a.AddRange(new[] { "-f", "concat", "-safe", "0", "-i", list });
+            if (sound) a.AddRange(new[] { "-i", Path.Combine(work.FullName, "sound.m4a") });
+            a.AddRange(new[] { "-map", "0:v" });
+            if (sound) a.AddRange(new[] { "-map", "1:a" });
+            a.AddRange(new[] { "-c", "copy" });
+            if (enc.Hevc) a.AddRange(new[] { "-tag:v", "hvc1" });
+            a.AddRange(new[] { "-movflags", "+faststart", s.OutputPath });
+            await RunFfmpegAsync(Join(a), cycle * s.Repeats, f => progress(0.96 + 0.04 * f), ct);
+            progress(1);
+        }
+        finally
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                try { work.Delete(recursive: true); break; }
+                catch { await Task.Delay(100); }
+            }
+        }
+    }
+
+    /// <summary>Runs one ffmpeg command, reporting its progress against <paramref name="seconds"/> of output.</summary>
+    static async Task RunFfmpegAsync(string args, double seconds, Action<double> progress, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
         var errors = new StringBuilder();
         using var p = new Process { StartInfo = Psi(args), EnableRaisingEvents = true };
         p.ErrorDataReceived += (_, e) => { if (e.Data != null) lock (errors) errors.AppendLine(e.Data); };
@@ -208,8 +390,7 @@ static class Exporter
         try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
         p.BeginErrorReadLine();
 
-        // Copies start at the keyframe before the start point, so their output runs a little longer.
-        double total = Math.Max(0.001, job.Length);
+        double total = Math.Max(0.001, seconds);
         using (ct.Register(() => { try { p.Kill(entireProcessTree: true); } catch { } }))
         {
             string? line;
@@ -222,14 +403,9 @@ static class Exporter
             await p.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
-        if (ct.IsCancellationRequested)
-        {
-            TryDelete(s.OutputPath);
-            throw new OperationCanceledException(ct);
-        }
+        ct.ThrowIfCancellationRequested();
         if (p.ExitCode != 0)
         {
-            TryDelete(s.OutputPath);
             string msg;
             lock (errors) msg = errors.ToString().Trim();
             var lines = msg.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -249,13 +425,13 @@ static class Exporter
     }
 
     /// <summary>A free file name next to the source: "name (trimmed).ext", "name (trimmed 2).ext", ...</summary>
-    public static string SuggestOutput(MediaInfo info, string extension)
+    public static string SuggestOutput(MediaInfo info, string extension, string tag = "trimmed")
     {
         string dir = Path.GetDirectoryName(info.Path) ?? Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
         string name = Path.GetFileNameWithoutExtension(info.Path);
         for (int i = 1; ; i++)
         {
-            string candidate = Path.Combine(dir, $"{name} (trimmed{(i > 1 ? " " + i : "")}){extension}");
+            string candidate = Path.Combine(dir, $"{name} ({tag}{(i > 1 ? " " + i : "")}){extension}");
             if (!File.Exists(candidate)) return candidate;
         }
     }
