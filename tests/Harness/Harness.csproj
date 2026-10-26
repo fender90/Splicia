@@ -8,14 +8,16 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <RootNamespace>VideoTrimmer</RootNamespace>
+    <RootNamespace>Splicia</RootNamespace>
     <AssemblyName>harness</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
     <Compile Include="..\..\*.cs" Exclude="..\..\Program.cs" />
-    <EmbeddedResource Include="..\..\app.ico" LogicalName="VideoTrimmer.app.ico" />
-    <EmbeddedResource Include="..\..\hero.jpg" LogicalName="VideoTrimmer.hero.jpg" />
+    <EmbeddedResource Include="..\..\app.ico" LogicalName="Splicia.app.ico" />
+    <EmbeddedResource Include="..\..\hero.jpg" LogicalName="Splicia.hero.jpg" />
+    <EmbeddedResource Include="..\..\LICENSE.txt" LogicalName="Splicia.LICENSE.txt" />
+    <EmbeddedResource Include="..\..\THIRD-PARTY-NOTICES.txt" LogicalName="Splicia.THIRD-PARTY-NOTICES.txt" />
     <None Include="..\..\ffmpeg\*.dll;..\..\ffmpeg\ffmpeg.exe;..\..\ffmpeg\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" Link="ffmpeg\%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

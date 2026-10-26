@@ -1,6 +1,6 @@
 # Builds the self-contained app and the installer.
-#   publish\VideoTrimmer.exe + publish\ffmpeg\   the app (runs from publish\)
-#   dist\VideoTrimmer-Setup-<ver>.exe             the installer: the same exe with the ffmpeg runtime appended as a zip
+#   publish\Splicia.exe + publish\ffmpeg\   the app (runs from publish\)
+#   dist\Splicia-Setup-<ver>.exe             the installer: the same exe with the ffmpeg runtime appended as a zip
 #                                                 (the "Setup" name switches it to the install wizard)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -23,7 +23,7 @@ if ($ffFiles | Where-Object { -not (Test-Path "ffmpeg\$_") }) {
 
 dotnet publish -c Release -o publish
 if ($LASTEXITCODE) { throw "publish failed" }
-$version = ([xml](Get-Content VideoTrimmer.csproj)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+$version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 
 # Payload: a zip of the ffmpeg runtime, appended to the exe, followed by its length (8 bytes) and the marker
 # "VTPAYLD1". The installer copies the exe part and unpacks the zip into <install dir>\ffmpeg.
@@ -39,11 +39,11 @@ try {
 finally { $zip.Dispose() }
 
 New-Item -ItemType Directory -Force dist | Out-Null
-Get-ChildItem dist -Filter 'VideoTrimmer-Setup-*.exe' | Remove-Item
-$setup = Join-Path $PSScriptRoot "dist\VideoTrimmer-Setup-$version.exe"
+Get-ChildItem dist -Filter 'Splicia-Setup-*.exe' | Remove-Item
+$setup = Join-Path $PSScriptRoot "dist\Splicia-Setup-$version.exe"
 $out = [System.IO.File]::Create($setup)
 try {
-    foreach ($part in (Join-Path $PSScriptRoot 'publish\VideoTrimmer.exe'), $zipPath) {
+    foreach ($part in (Join-Path $PSScriptRoot 'publish\Splicia.exe'), $zipPath) {
         $in = [System.IO.File]::OpenRead($part)
         try { $in.CopyTo($out) } finally { $in.Dispose() }
     }
@@ -54,4 +54,4 @@ try {
 finally { $out.Dispose() }
 Remove-Item $zipPath
 
-Get-ChildItem publish\VideoTrimmer.exe, dist\*.exe | Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }
+Get-ChildItem publish\Splicia.exe, dist\*.exe | Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }

@@ -1,7 +1,7 @@
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Filmstrip pictures for the trim timeline: <see cref="Count"/> evenly spaced keyframes, decoded on a background thread

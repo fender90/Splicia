@@ -1,12 +1,12 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
-/// Appends exception reports to CrashLogs\crash.log in VideoTrimmer.exe's folder (rolled to crash.old.log past 1 MB), so
+/// Appends exception reports to CrashLogs\crash.log in Splicia.exe's folder (rolled to crash.old.log past 1 MB), so
 /// everything the app writes lives in its own folder. For an all-users install (read-only Program Files folder) it uses
-/// %ProgramData%\Video Trimmer\CrashLogs instead.
+/// %ProgramData%\Splicia\CrashLogs instead.
 /// </summary>
 static class CrashLog
 {
@@ -32,10 +32,10 @@ static class CrashLog
         catch
         {
             // Read-only install folder (an all-users install in Program Files): the shared, user-writable
-            // ProgramData\Video Trimmer\CrashLogs the installer prepared, else %TEMP% as a last resort.
+            // ProgramData\Splicia\CrashLogs the installer prepared, else %TEMP% as a last resort.
             return System.IO.Directory.Exists(Installer.MachineLogDirectory)
                 ? Installer.MachineLogDirectory
-                : Path.Combine(Path.GetTempPath(), "VideoTrimmer");
+                : Path.Combine(Path.GetTempPath(), "Splicia");
         }
     }
 
@@ -90,9 +90,9 @@ static class CrashLog
     {
         Write(ex, "UI thread exception");
         var answer = MessageBox.Show(
-            $"Video Trimmer hit an unexpected error:\n\n{ex.Message}\n\nDetails were saved to:\n{FilePath}\n\n" +
+            $"Splicia hit an unexpected error:\n\n{ex.Message}\n\nDetails were saved to:\n{FilePath}\n\n" +
             "Yes = keep running   No = quit   Cancel = open the log folder",
-            "Video Trimmer", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Error);
+            "Splicia", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Error);
         if (answer == DialogResult.No) Environment.Exit(1);
         if (answer == DialogResult.Cancel) OpenFolder();
     }

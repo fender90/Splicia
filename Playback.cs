@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Owns a <see cref="MediaSource"/> on a worker thread. Paused, it decodes single frames on request (seek, scrub,

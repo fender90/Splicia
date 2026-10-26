@@ -1,13 +1,13 @@
 using System.Drawing.Drawing2D;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Crop mode: the whole frame is shown with a crop rectangle over it (corner and edge handles, drag inside to move,
 /// drag outside to draw a new one) and a toolbar of aspect ratios. Outside crop mode the preview shows just the crop.
 /// The crop is kept as fractions of the picture as shown (after rotation), which is what the export uses too.
 /// </summary>
-sealed partial class TrimmerForm
+sealed partial class MainForm
 {
     enum CropPart { None, Move, N, S, W, E, NW, NE, SW, SE, New }
 
@@ -426,7 +426,7 @@ sealed partial class TrimmerForm
             var r = new RectangleF(c.Left + c.Width / 2 - size.Width / 2 - P(10), c.Top + c.Height / 2 - size.Height / 2 - P(4),
                 size.Width + P(20), size.Height + P(8));
             using (var path = RoundRect(r, r.Height / 2))
-            using (var b = new SolidBrush(Color.FromArgb(200, 18, 20, 26))) g.FillPath(b, path);
+            using (var b = new SolidBrush(Color.FromArgb(210, 12, 17, 44))) g.FillPath(b, path);
             using var tb = new SolidBrush(Color.White);
             g.DrawString(label, _timeFont, tb, r.X + P(10), r.Y + P(4));
         }
@@ -440,7 +440,7 @@ sealed partial class TrimmerForm
         {
             bool selected = item == _aspect, hot = item == _hoverItem, done = item == DoneItem;
             Color fill = done ? (hot ? Theme.AccentHover : Theme.Accent)
-                : selected ? Color.FromArgb(255, 70, 76, 92) : hot ? Color.FromArgb(60, 255, 255, 255) : Color.Empty;
+                : selected ? Theme.BtnHover : hot ? Color.FromArgb(60, 255, 255, 255) : Color.Empty;
             if (fill != Color.Empty)
                 using (var p = RoundRect(r, r.Height / 2))
                 using (var b = new SolidBrush(fill)) g.FillPath(b, p);

@@ -3,13 +3,13 @@ using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Borderless, fully custom-drawn main window: the video with a frosted-glass control overlay holding a filmstrip
 /// timeline with yellow trim handles, playback, rotate and export controls.
 /// </summary>
-sealed partial class TrimmerForm : Form
+sealed partial class MainForm : Form
 {
     enum Hit { None, Center, Timeline, TrimIn, TrimOut, TrimMove, Play, Prev, Next, SetIn, SetOut, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More, Export, Min, Max, Close }
     enum Drag { None, Seek, In, Out, Move, Volume, Crop }
@@ -78,9 +78,9 @@ sealed partial class TrimmerForm : Form
     Rectangle _restoreBounds;
     FormWindowState _restoreState;
 
-    public TrimmerForm(string? path)
+    public MainForm(string? path)
     {
-        Text = "Video Trimmer";
+        Text = "Splicia";
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         FormBorderStyle = FormBorderStyle.None;
         BackColor = Color.Black;
@@ -534,7 +534,7 @@ sealed partial class TrimmerForm : Form
 
         // Window buttons
         var wb = WindowButtonsRect;
-        using (var path = RoundRect(wb, wb.Height / 2f)) Glass(g, path, wb);
+        using (var path = RoundRect(wb, wb.Height / 2f)) Glass(g, path, wb, darken: 125);
         foreach (var h in new[] { Hit.Min, Hit.Max, Hit.Close })
         {
             var r = Rect(h);
@@ -561,7 +561,7 @@ sealed partial class TrimmerForm : Form
 
         // Control panel
         var pr = PanelRect;
-        using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr, darken: 95); // darker than the other glass: text and trim frame stay legible over bright video
+        using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr, darken: 135); // darker than the other glass: text and trim frame stay legible over bright video
         DrawPanelContents(g, pr);
         if (_cropping) DrawCropBar(g);
         if (_hintVisible && _hover != Hit.None && _drag == Drag.None) DrawHint(g, _hover);
@@ -573,7 +573,7 @@ sealed partial class TrimmerForm : Form
         using var subBrush = new SolidBrush(W(160));
         using var sf = new StringFormat(StringFormatFlags.NoWrap) { Trimming = StringTrimming.EllipsisCharacter };
 
-        string title = _info != null ? Path.GetFileName(_info.Path) : "Video Trimmer";
+        string title = _info != null ? Path.GetFileName(_info.Path) : "Splicia";
         string time = _info != null ? $"{Fmt(_pos)} / {Fmt(Duration)}" : "";
         string sub = "No video loaded";
         string sel = "";
@@ -626,10 +626,18 @@ sealed partial class TrimmerForm : Form
 
         // Export: the one accent-coloured button
         var er = Rect(Hit.Export);
-        var fill = !has ? C(90, 60, 66, 80) : _pressed == Hit.Export && _hover == Hit.Export ? C(255, Theme.AccentDown)
-            : _hover == Hit.Export ? C(255, Theme.AccentHover) : C(255, Theme.Accent);
+        bool down = _pressed == Hit.Export && _hover == Hit.Export, hot = _hover == Hit.Export;
         using (var ep = RoundRect(er, er.Height / 2f))
-        using (var eb = new SolidBrush(fill)) g.FillPath(eb, ep);
+        {
+            if (!has)
+                using (var eb = new SolidBrush(C(90, Theme.Btn))) g.FillPath(eb, ep);
+            else
+                // The logo's blue → violet, like the setup and export windows' main buttons
+                using (var eb = new LinearGradientBrush(RectangleF.Inflate(er, 1, 1),
+                           C(255, down ? Theme.AccentDown : hot ? Theme.AccentHover : Theme.Accent),
+                           C(255, down ? Theme.VioletDown : hot ? Theme.VioletHover : Theme.Violet), 0f))
+                    g.FillPath(eb, ep);
+        }
         var textCol = has ? W(255) : W(110);
         var tsize = g.MeasureString("Export", _buttonFont);
         float icon = P(14), gap = P(7), total = icon + gap + tsize.Width, x0 = er.Left + (er.Width - total) / 2;
@@ -831,7 +839,7 @@ sealed partial class TrimmerForm : Form
         r.X = Math.Clamp(r.X, P(8), ClientSize.Width - P(8) - r.Width);
         using (var path = RoundRect(r, r.Height / 2))
         {
-            using var b = new SolidBrush(C(235, 22, 24, 30));
+            using var b = new SolidBrush(C(235, 12, 17, 44));
             g.FillPath(b, path);
             using var border = new Pen(W(50), 1f);
             g.DrawPath(border, path);
@@ -853,7 +861,7 @@ sealed partial class TrimmerForm : Form
         var size = g.MeasureString(_toast, _timeFont);
         var r = new RectangleF((ClientSize.Width - size.Width) / 2 - P(16), P(20), size.Width + P(32), size.Height + P(14));
         using (var path = RoundRect(r, r.Height / 2))
-        using (var b = new SolidBrush(Color.FromArgb((int)(200 * a), 20, 22, 28))) g.FillPath(b, path);
+        using (var b = new SolidBrush(Color.FromArgb((int)(210 * a), 12, 17, 44))) g.FillPath(b, path);
         using var tb = new SolidBrush(Color.FromArgb((int)(245 * a), 255, 255, 255));
         g.DrawString(_toast, _timeFont, tb, r.X + P(16), r.Y + P(7));
     }
@@ -868,12 +876,15 @@ sealed partial class TrimmerForm : Form
 
     internal static string Length(double s) => s < 60 ? $"{s:0.00} s" : Fmt(s);
 
-    /// <summary>Frosted glass: blurred video behind the shape, a dark tint, a soft top highlight and a hairline border.</summary>
+    /// <summary>
+    /// Frosted glass in the brand colours: blurred video behind the shape, the logo's night-sky navy and an indigo tint,
+    /// a soft top highlight and a hairline blue border.
+    /// </summary>
     void Glass(Graphics g, GraphicsPath path, Rectangle bounds, int tint = 70, int darken = 0)
     {
         var st = g.Save();
         g.SetClip(path, CombineMode.Intersect);
-        using (var black = new SolidBrush(C(200, 0, 0, 0))) g.FillRectangle(black, bounds);
+        using (var black = new SolidBrush(C(200, Theme.Bg))) g.FillRectangle(black, bounds);
         if (_blur != null)
         {
             using var ia = new ImageAttributes();
@@ -888,12 +899,12 @@ sealed partial class TrimmerForm : Form
                 g.DrawImage(_blur, dest, (dest.X - vr.X) * sx, (dest.Y - vr.Y) * sy, dest.Width * sx, dest.Height * sy, GraphicsUnit.Pixel, ia);
             }
         }
-        if (darken > 0) using (var dk = new SolidBrush(C(darken, 8, 10, 16))) g.FillRectangle(dk, bounds);
-        using (var t = new SolidBrush(C(tint, 70, 80, 95))) g.FillRectangle(t, bounds);
+        if (darken > 0) using (var dk = new SolidBrush(C(darken, Theme.Bg))) g.FillRectangle(dk, bounds);
+        using (var t = new SolidBrush(C(tint, 46, 58, 140))) g.FillRectangle(t, bounds);
         using (var hl = new LinearGradientBrush(new Rectangle(bounds.X, bounds.Y - 1, bounds.Width, bounds.Height + 2), W(30), W(6), 90f))
             g.FillRectangle(hl, bounds);
         g.Restore(st);
-        using var border = new Pen(W(45), 1f);
+        using var border = new Pen(C(70, 130, 160, 255), 1f);
         g.DrawPath(border, path);
     }
 
@@ -1672,6 +1683,8 @@ sealed partial class TrimmerForm : Form
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(Item("Keyboard shortcuts", () => { RevealCursor(); using var dlg = new ShortcutsDialog(); dlg.ShowDialog(this); }));
         _menu.Items.Add(Item("Open crash log folder", CrashLog.OpenFolder));
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(Item($"About {AppInfo.Name}", () => { RevealCursor(); using var dlg = new AboutDialog(); dlg.ShowDialog(this); }));
     }
 
     void ShowMenu()
@@ -1682,7 +1695,7 @@ sealed partial class TrimmerForm : Form
 
     sealed class DarkColors : ProfessionalColorTable
     {
-        static readonly Color Bg = Color.FromArgb(32, 34, 40), Hi = Color.FromArgb(58, 62, 72), Bd = Color.FromArgb(70, 74, 84);
+        static readonly Color Bg = Color.FromArgb(16, 21, 46), Hi = Color.FromArgb(36, 45, 88), Bd = Color.FromArgb(50, 60, 106);
         public override Color ToolStripDropDownBackground => Bg;
         public override Color MenuBorder => Bd;
         public override Color MenuItemBorder => Hi;
@@ -1711,12 +1724,12 @@ sealed partial class TrimmerForm : Form
         if (_busy > 0) { BeginInvoke(() => Open(path)); return; }
         if (FFmpegRuntime.Load() is string loadError)
         {
-            MessageBox.Show(this, loadError, "Video Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, loadError, "Splicia", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
         if (!File.Exists(path))
         {
-            MessageBox.Show(this, $"This file doesn't exist (any more):\n{path}", "Video Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"This file doesn't exist (any more):\n{path}", "Splicia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         Playback pb;
@@ -1724,7 +1737,7 @@ sealed partial class TrimmerForm : Form
         catch (Exception ex)
         {
             if (ex is not NotSupportedException) CrashLog.Write(ex, $"Opening {path}");
-            MessageBox.Show(this, $"Couldn't open this video:\n{path}\n\n{ex.Message}", "Video Trimmer", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"Couldn't open this video:\n{path}\n\n{ex.Message}", "Splicia", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
         CloseFile();
@@ -1740,7 +1753,7 @@ sealed partial class TrimmerForm : Form
         _aspect = 0;
         _strip = new ThumbnailStrip(_info, this, P(46) * 2);
         _strip.Updated += () => { _stripVersion++; if (_ui > 0) Invalidate(PanelRect); };
-        Text = $"{Path.GetFileName(path)} — Video Trimmer";
+        Text = $"{Path.GetFileName(path)} — Splicia";
         ResetZoom();
         _pb.ShowAt(0);
         Activity();

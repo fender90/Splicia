@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Export window in the app's design language: choose the format and quality, pick where to save, then a progress
@@ -59,7 +59,7 @@ sealed class ExportDialog : PagedWindow
         var (w, h) = _job.OutputSize();
         string rot = _job.Rotation switch { 90 => "  ·  rotated 90° right", 180 => "  ·  rotated 180°", 270 => "  ·  rotated 90° left", _ => "" };
         string crop = _job.Crop != null ? "  ·  cropped" : "";
-        return $"{TrimmerForm.Fmt(_job.Start)} → {TrimmerForm.Fmt(_job.End)}  ·  {TrimmerForm.Length(_job.Length)}  ·  {w}×{h}{rot}{crop}";
+        return $"{MainForm.Fmt(_job.Start)} → {MainForm.Fmt(_job.End)}  ·  {MainForm.Length(_job.Length)}  ·  {w}×{h}{rot}{crop}";
     }
 
     /// <summary>Length of the exported video: the selection, or forwards + backwards (minus the two turn frames) × repeats.</summary>
@@ -72,8 +72,8 @@ sealed class ExportDialog : PagedWindow
     }
 
     string BoomerangDescription() => _repeats == 1
-        ? $"Plays forwards, then backwards: {TrimmerForm.Length(ResultLength())}"
-        : $"Forwards, then backwards, {_repeats} times: {TrimmerForm.Length(ResultLength())}";
+        ? $"Plays forwards, then backwards: {MainForm.Length(ResultLength())}"
+        : $"Forwards, then backwards, {_repeats} times: {MainForm.Length(ResultLength())}";
 
     // ───────────────────────── 1. options ─────────────────────────
 
@@ -167,7 +167,7 @@ sealed class ExportDialog : PagedWindow
     string OriginalDescription()
     {
         if (_originalBlocked != null) return _originalBlocked;
-        string start = _keyframe is double k && k < _job.Start - 0.01 ? $"starts at the keyframe at {TrimmerForm.Fmt(k)}" : "starts on a keyframe";
+        string start = _keyframe is double k && k < _job.Start - 0.01 ? $"starts at the keyframe at {MainForm.Fmt(k)}" : "starts on a keyframe";
         string rot = _job.Rotation != 0 ? " Rotation is stored as a tag players follow." : "";
         return $"Lossless and very fast, but cuts land on keyframes: it {start} and may end a few frames late.{rot}";
     }
@@ -273,7 +273,7 @@ sealed class ExportDialog : PagedWindow
         string size = "";
         try { size = FormatSize(new FileInfo(s.OutputPath).Length) + "  ·  "; } catch { }
         AddText(Path.GetFileName(s.OutputPath), Body, Theme.Fg, 8);
-        AddText($"{size}{TrimmerForm.Length(ResultLength())}  ·  in {Path.GetDirectoryName(s.OutputPath)}", Small, Theme.Dim, 4);
+        AddText($"{size}{MainForm.Length(ResultLength())}  ·  in {Path.GetDirectoryName(s.OutputPath)}", Small, Theme.Dim, 4);
         Footer(new[]
             {
                 Button("Show in folder", PillButton.Kind.Ghost, () => Shell("explorer.exe", $"/select,\"{s.OutputPath}\"")),

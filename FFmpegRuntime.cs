@@ -1,6 +1,6 @@
 using FFmpeg.AutoGen;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Locates and loads the bundled FFmpeg build (the ffmpeg\ folder next to the exe: libav* DLLs used in-process for
@@ -28,7 +28,7 @@ static class FFmpegRuntime
     {
         if (_loaded) return null;
         if (!IsPresent(Directory))
-            return $"The FFmpeg components are missing from\n{Directory}\n\nReinstall Video Trimmer to restore them.";
+            return $"The FFmpeg components are missing from\n{Directory}\n\nReinstall Splicia to restore them.";
         try
         {
             ffmpeg.RootPath = Directory;

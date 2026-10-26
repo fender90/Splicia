@@ -1,7 +1,7 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Crop mode in the real window, rendered offscreen and never activated (focus is never taken): aspect presets, handle,
@@ -50,7 +50,7 @@ static class CropUiTests
 
     static RectangleF Crop(Form f) => (RectangleF)Get(f, "_crop")!;
     static RectangleF CropWin(Form f) => (RectangleF)Get(f, "CropWindowRect")!;
-    static int AspectIndex(string label) => Array.FindIndex(((string Label, double Ratio)[])typeof(TrimmerForm).GetField("Aspects", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!, a => a.Label == label);
+    static int AspectIndex(string label) => Array.FindIndex(((string Label, double Ratio)[])typeof(MainForm).GetField("Aspects", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!, a => a.Label == label);
 
     /// <summary>Crop's width / height in display pixels (picture as shown).</summary>
     static double Ratio(Form f)
@@ -62,7 +62,7 @@ static class CropUiTests
 
     public static void Run()
     {
-        var form = new TrimmerForm(null) { StartPosition = FormStartPosition.Manual, Location = new Point(-31900, -31900), ClientSize = new Size(1280, 800) };
+        var form = new MainForm(null) { StartPosition = FormStartPosition.Manual, Location = new Point(-31900, -31900), ClientSize = new Size(1280, 800) };
         ShowWindow(form.Handle, 4); // SW_SHOWNOACTIVATE
         Call(form, "Open", Path.Combine(H.Vids, "t7_counter.mp4"));
         Pump(2.0);

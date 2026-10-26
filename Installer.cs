@@ -5,7 +5,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using Microsoft.Win32;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>Who an installation is for: just the current account (HKCU, no admin) or everyone (HKLM, Program Files).</summary>
 enum InstallScope { CurrentUser, AllUsers }
@@ -22,13 +22,27 @@ sealed record InstallOptions(InstallScope Scope, string Directory, bool StartMen
 /// </summary>
 static class Installer
 {
-    public const string AppName = "Video Trimmer";
-    const string ExeName = "VideoTrimmer.exe";
-    const string ProgId = "VideoTrimmer.video";
-    const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\VideoTrimmer";
-    const string AppKey = @"Software\VideoTrimmer";
-    const string CapabilitiesKey = AppKey + @"\Capabilities";
-    const string Description = "Trim, rotate and export videos";
+    /// <summary>An app's identity on disk and in the registry.</summary>
+    sealed record Brand(string AppName, string ExeName, string ProgId, string Key)
+    {
+        public string UninstallKey => @"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + Key;
+        public string AppKey => @"Software\" + Key;
+        public string CapabilitiesKey => AppKey + @"\Capabilities";
+        public string IconPattern => Key + "-*.ico";
+    }
+
+    static readonly Brand Current = new("Splicia", "Splicia.exe", "Splicia.video", "Splicia");
+
+    /// <summary>Splicia's name before 2.0. Installing Splicia replaces a copy of it installed the same way.</summary>
+    static readonly Brand Legacy = new("Video Trimmer", "VideoTrimmer.exe", "VideoTrimmer.video", "VideoTrimmer");
+
+    public const string AppName = AppInfo.Name;
+    const string ExeName = "Splicia.exe";
+    const string ProgId = "Splicia.video";
+    const string Description = AppInfo.Tagline;
+    static string UninstallKey => Current.UninstallKey;
+    static string AppKey => Current.AppKey;
+    static string CapabilitiesKey => Current.CapabilitiesKey;
 
     public static readonly string[] VideoExtensions =
     {
@@ -51,24 +65,38 @@ static class Installer
 
     public static string DefaultDirectory(InstallScope s) => s == InstallScope.AllUsers
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), AppName)
-        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "VideoTrimmer");
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "Splicia");
 
-    static string StartMenuShortcut(InstallScope s) => Path.Combine(Environment.GetFolderPath(
-        s == InstallScope.AllUsers ? Environment.SpecialFolder.CommonPrograms : Environment.SpecialFolder.Programs), AppName + ".lnk");
+    static string StartMenuShortcut(InstallScope s, Brand? b = null) => Path.Combine(Environment.GetFolderPath(
+        s == InstallScope.AllUsers ? Environment.SpecialFolder.CommonPrograms : Environment.SpecialFolder.Programs), (b ?? Current).AppName + ".lnk");
 
-    static string DesktopShortcut(InstallScope s) => Path.Combine(Environment.GetFolderPath(
-        s == InstallScope.AllUsers ? Environment.SpecialFolder.CommonDesktopDirectory : Environment.SpecialFolder.DesktopDirectory), AppName + ".lnk");
+    static string DesktopShortcut(InstallScope s, Brand? b = null) => Path.Combine(Environment.GetFolderPath(
+        s == InstallScope.AllUsers ? Environment.SpecialFolder.CommonDesktopDirectory : Environment.SpecialFolder.DesktopDirectory), (b ?? Current).AppName + ".lnk");
 
     /// <summary>Shared, user-writable crash-log folder for all-users installs (Program Files isn't writable by the app).</summary>
-    public static string MachineLogDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), AppName, "CrashLogs");
+    public static string MachineLogDirectory => MachineLogDirectoryOf(Current);
+
+    static string MachineLogDirectoryOf(Brand b) =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), b.AppName, "CrashLogs");
 
     /// <summary>Folder of the installation for <paramref name="s"/>, or null if not installed that way.</summary>
-    public static string? InstalledDirectory(InstallScope s)
+    public static string? InstalledDirectory(InstallScope s) => InstalledDirectory(s, Current);
+
+    static string? InstalledDirectory(InstallScope s, Brand b)
     {
-        using var k = Root(s).OpenSubKey(UninstallKey);
-        return k?.GetValue("InstallLocation") is string dir && File.Exists(Path.Combine(dir, ExeName)) ? dir : null;
+        using var k = Root(s).OpenSubKey(b.UninstallKey);
+        return k?.GetValue("InstallLocation") is string dir && File.Exists(Path.Combine(dir, b.ExeName)) ? dir : null;
     }
+
+    /// <summary>Where Video Trimmer (Splicia's former name) is installed, by scope.</summary>
+    public static IEnumerable<InstallScope> LegacyScopes() =>
+        new[] { InstallScope.CurrentUser, InstallScope.AllUsers }.Where(s => Root(s).OpenSubKey(Legacy.UninstallKey) is { } k && Dispose(k));
+
+    static bool Dispose(IDisposable d) { d.Dispose(); return true; }
+
+    /// <summary>True if the old Video Trimmer is running from any of its installations.</summary>
+    public static bool LegacyRunning() =>
+        LegacyScopes().Any(s => InstalledDirectory(s, Legacy) is string dir && IsRunningFrom(dir, Legacy));
 
     public static string? InstalledVersion(InstallScope s)
     {
@@ -87,11 +115,13 @@ static class Installer
     public static bool HasDesktopShortcut(InstallScope s) => File.Exists(DesktopShortcut(s));
     public static bool HasStartMenuShortcut(InstallScope s) => File.Exists(StartMenuShortcut(s));
 
-    /// <summary>True if Video Trimmer is currently running from <paramref name="directory"/> (other than this process).</summary>
-    public static bool IsRunningFrom(string directory)
+    /// <summary>True if Splicia is currently running from <paramref name="directory"/> (other than this process).</summary>
+    public static bool IsRunningFrom(string directory) => IsRunningFrom(directory, Current);
+
+    static bool IsRunningFrom(string directory, Brand b)
     {
-        string target = Path.GetFullPath(Path.Combine(directory, ExeName));
-        foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(ExeName)))
+        string target = Path.GetFullPath(Path.Combine(directory, b.ExeName));
+        foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(b.ExeName)))
         {
             try
             {
@@ -177,7 +207,7 @@ static class Installer
         {
             string srcFf = Path.Combine(Path.GetDirectoryName(src)!, "ffmpeg");
             if (!FFmpegRuntime.IsPresent(srcFf))
-                throw new FileNotFoundException("The FFmpeg components weren't found. Run the full VideoTrimmer-Setup exe.");
+                throw new FileNotFoundException("The FFmpeg components weren't found. Run the full Splicia-Setup exe.");
             Directory.CreateDirectory(ffDir);
             var files = Directory.GetFiles(srcFf);
             for (int i = 0; i < files.Length; i++)
@@ -189,6 +219,8 @@ static class Installer
         if (!FFmpegRuntime.IsPresent(ffDir)) throw new FileNotFoundException("The FFmpeg components are incomplete.");
 
         string fileIcon = $"\"{WriteFileIcon(dir)}\",0";
+        WriteResource("Splicia.LICENSE.txt", Path.Combine(dir, AppInfo.LicenseFile));
+        WriteResource("Splicia.THIRD-PARTY-NOTICES.txt", Path.Combine(dir, AppInfo.NoticesFile));
         if (scope == InstallScope.AllUsers) PrepareMachineLogDirectory();
 
         Step("Adding Open with entries for videos…", 0.84);
@@ -201,7 +233,10 @@ static class Installer
         {
             k.SetValue("DisplayName", AppName);
             k.SetValue("DisplayVersion", Version);
-            k.SetValue("Publisher", AppName);
+            k.SetValue("Publisher", AppInfo.Publisher);
+            k.SetValue("URLInfoAbout", AppInfo.Website);
+            k.SetValue("HelpLink", AppInfo.Website);
+            k.SetValue("Comments", $"{AppInfo.Tagline}. Licensed under {AppInfo.License}.");
             k.SetValue("DisplayIcon", $"\"{exe}\",0");
             k.SetValue("InstallLocation", dir);
             k.SetValue("InstallDate", DateTime.Now.ToString("yyyyMMdd"));
@@ -220,7 +255,15 @@ static class Installer
         if (previousDir != null && !string.Equals(Path.GetFullPath(previousDir), dir, StringComparison.OrdinalIgnoreCase))
             try { RemoveOurFiles(previousDir); } catch { }
 
-        Step("Refreshing icons…", 0.96);
+        // Splicia used to be Video Trimmer: remove that copy (same scope) so there's one app, not two.
+        if (InstalledDirectory(scope, Legacy) != null || LegacyScopes().Contains(scope))
+        {
+            Step("Removing Video Trimmer (Splicia's old name)…", 0.94);
+            try { Remove(Legacy, scope, forgetUser: true); }
+            catch (Exception ex) { CrashLog.Write(ex, "Removing Video Trimmer"); }
+        }
+
+        Step("Refreshing icons…", 0.97);
         NotifyShell();
         Step("Done", 1.0);
     }
@@ -266,7 +309,7 @@ static class Installer
         }
     }
 
-    /// <summary>ProgramData\Video Trimmer\CrashLogs, writable by every user (the app runs unelevated).</summary>
+    /// <summary>ProgramData\Splicia\CrashLogs, writable by every user (the app runs unelevated).</summary>
     static void PrepareMachineLogDirectory()
     {
         var di = Directory.CreateDirectory(MachineLogDirectory);
@@ -307,7 +350,7 @@ static class Installer
             }
         }
 
-        // Register with Settings → Default apps, so Video Trimmer is listed there by name.
+        // Register with Settings → Default apps, so Splicia is listed there by name.
         using (var cap = root.CreateSubKey(CapabilitiesKey))
         {
             cap.SetValue("ApplicationName", AppName);
@@ -321,63 +364,74 @@ static class Installer
     }
 
     /// <summary>
-    /// Writes the app icon as VideoTrimmer-&lt;hash&gt;.ico in the install folder and removes older ones. Explorer caches
+    /// Writes the app icon as Splicia-&lt;hash&gt;.ico in the install folder and removes older ones. Explorer caches
     /// icons by path, so a content-derived name guarantees a changed icon is picked up instead of a stale cached one.
     /// </summary>
     static string WriteFileIcon(string dir)
     {
-        using var res = typeof(Installer).Assembly.GetManifestResourceStream("VideoTrimmer.app.ico")
+        using var res = typeof(Installer).Assembly.GetManifestResourceStream("Splicia.app.ico")
                         ?? throw new InvalidOperationException("Embedded icon missing.");
         using var ms = new MemoryStream();
         res.CopyTo(ms);
         byte[] bytes = ms.ToArray();
         string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..8].ToLowerInvariant();
-        string path = Path.Combine(dir, $"VideoTrimmer-{hash}.ico");
+        string path = Path.Combine(dir, $"Splicia-{hash}.ico");
         if (!File.Exists(path)) File.WriteAllBytes(path, bytes);
-        foreach (var old in Directory.GetFiles(dir, "VideoTrimmer-*.ico"))
+        foreach (var old in Directory.GetFiles(dir, Current.IconPattern))
             if (!string.Equals(old, path, StringComparison.OrdinalIgnoreCase))
                 try { File.Delete(old); } catch { }
         return path;
+    }
+
+    static void WriteResource(string name, string path)
+    {
+        using var res = typeof(Installer).Assembly.GetManifestResourceStream(name)
+                        ?? throw new InvalidOperationException($"Embedded {name} missing.");
+        using var file = new FileStream(path, FileMode.Create, FileAccess.Write);
+        res.CopyTo(file);
     }
 
     // ───────────────────────── uninstall ─────────────────────────
 
     /// <summary>
     /// Removes the installation for <paramref name="scope"/>. With <paramref name="forgetUser"/> (a real uninstall, not a
-    /// move between scopes) the current user's Windows records that point at Video Trimmer are cleared too.
+    /// move between scopes) the current user's Windows records that point at Splicia are cleared too.
     /// </summary>
-    public static void Uninstall(InstallScope scope, bool forgetUser, Action<string, double>? progress = null)
+    public static void Uninstall(InstallScope scope, bool forgetUser, Action<string, double>? progress = null) =>
+        Remove(Current, scope, forgetUser, progress);
+
+    static void Remove(Brand b, InstallScope scope, bool forgetUser, Action<string, double>? progress = null)
     {
         void Step(string text, double fraction) => progress?.Invoke(text, fraction);
         if (scope == InstallScope.AllUsers && !IsElevated)
             throw new UnauthorizedAccessException("Removing an all-users installation requires administrator permission.");
-        string? dir = InstalledDirectory(scope);
+        string? dir = InstalledDirectory(scope, b);
         var root = Root(scope);
 
         Step("Removing Open with entries…", 0.2);
         using (var classes = root.OpenSubKey(@"Software\Classes", writable: true))
         {
-            classes?.DeleteSubKeyTree(ProgId, false);
-            classes?.DeleteSubKeyTree(@"Applications\" + ExeName, false);
+            classes?.DeleteSubKeyTree(b.ProgId, false);
+            classes?.DeleteSubKeyTree(@"Applications\" + b.ExeName, false);
         }
-        foreach (var ext in VideoExtensions) ForgetClassesEntries(root, ext);
-        if (forgetUser && scope == InstallScope.CurrentUser) ForgetUserRecords();
+        foreach (var ext in VideoExtensions) ForgetClassesEntries(root, ext, b);
+        if (forgetUser && scope == InstallScope.CurrentUser) ForgetUserRecords(b);
 
         Step("Removing from Settings → Apps…", 0.45);
-        root.DeleteSubKeyTree(UninstallKey, false);
-        root.DeleteSubKeyTree(AppKey, false);
+        root.DeleteSubKeyTree(b.UninstallKey, false);
+        root.DeleteSubKeyTree(b.AppKey, false);
         using (var ra = root.OpenSubKey(@"Software\RegisteredApplications", writable: true))
-            ra?.DeleteValue(AppName, false);
+            ra?.DeleteValue(b.AppName, false);
 
         Step("Removing shortcuts…", 0.65);
-        DeleteIfOurs(StartMenuShortcut(scope));
-        DeleteIfOurs(DesktopShortcut(scope));
+        DeleteIfOurs(StartMenuShortcut(scope, b), b);
+        DeleteIfOurs(DesktopShortcut(scope, b), b);
         NotifyShell();
 
         Step("Removing files…", 0.85);
-        if (dir != null) RemoveOurFiles(dir);
+        if (dir != null) RemoveOurFiles(dir, b);
         if (scope == InstallScope.AllUsers)
-            try { Directory.Delete(Path.GetDirectoryName(MachineLogDirectory)!, recursive: true); } catch { }
+            try { Directory.Delete(Path.GetDirectoryName(MachineLogDirectoryOf(b))!, recursive: true); } catch { }
         Step("Done", 1.0);
     }
 
@@ -388,14 +442,14 @@ static class Installer
     public static void ForgetCurrentUserRecords()
     {
         if (InstalledDirectory(InstallScope.CurrentUser) != null) return;
-        ForgetUserRecords();
+        ForgetUserRecords(Current);
     }
 
-    static bool IsOurProgId(string? progId) => progId != null &&
-        (progId == ProgId || progId.Equals(@"Applications\" + ExeName, StringComparison.OrdinalIgnoreCase));
+    static bool IsOurProgId(string? progId, Brand b) => progId != null &&
+        (progId == b.ProgId || progId.Equals(@"Applications\" + b.ExeName, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Our Open-with entry under &lt;root&gt;\Software\Classes\&lt;ext&gt;, then the key if it's left empty.</summary>
-    static void ForgetClassesEntries(RegistryKey root, string ext)
+    static void ForgetClassesEntries(RegistryKey root, string ext, Brand b)
     {
         using var classes = root.OpenSubKey(@"Software\Classes", writable: true);
         if (classes == null) return;
@@ -404,18 +458,18 @@ static class Installer
             if (k == null) return;
             using (var owp = k.OpenSubKey("OpenWithProgids", writable: true))
                 foreach (var name in owp?.GetValueNames() ?? Array.Empty<string>())
-                    if (IsOurProgId(name)) owp!.DeleteValue(name, false);
+                    if (IsOurProgId(name, b)) owp!.DeleteValue(name, false);
             DeleteIfEmpty(k, "OpenWithProgids");
         }
         DeleteIfEmpty(classes, ext);
     }
 
     /// <summary>
-    /// Clears what Windows remembers for this user that points at Video Trimmer: a default-app choice the user made
+    /// Clears what Windows remembers for this user that points at the app: a default-app choice the user made
     /// (UserChoice / UserChoiceLatest), its place in the "opened with" history and Open-with lists, the "new app can
     /// open this" notification records, and the cached app name. Entries for other apps are left alone.
     /// </summary>
-    static void ForgetUserRecords()
+    static void ForgetUserRecords(Brand b)
     {
         using (var fileExts = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts", writable: true))
         {
@@ -429,7 +483,7 @@ static class Installer
                         bool ours;
                         using (var uc = k.OpenSubKey(choice))
                         using (var sub = uc?.OpenSubKey("ProgId"))
-                            ours = IsOurProgId(uc?.GetValue("ProgId") as string) || IsOurProgId(sub?.GetValue("ProgId") as string);
+                            ours = IsOurProgId(uc?.GetValue("ProgId") as string, b) || IsOurProgId(sub?.GetValue("ProgId") as string, b);
                         if (ours)
                             try { k.DeleteSubKeyTree(choice, false); }
                             catch (Exception ex) { CrashLog.Write(ex, $"Clearing {ext} {choice}"); }
@@ -441,7 +495,7 @@ static class Installer
                         {
                             string mru = owl.GetValue("MRUList") as string ?? "";
                             foreach (var name in owl.GetValueNames())
-                                if (name.Length == 1 && string.Equals(owl.GetValue(name) as string, ExeName, StringComparison.OrdinalIgnoreCase))
+                                if (name.Length == 1 && string.Equals(owl.GetValue(name) as string, b.ExeName, StringComparison.OrdinalIgnoreCase))
                                 {
                                     owl.DeleteValue(name, false);
                                     mru = mru.Replace(name, "");
@@ -452,7 +506,7 @@ static class Installer
                     DeleteIfEmpty(k, "OpenWithList");
                     using (var owp = k.OpenSubKey("OpenWithProgids", writable: true))
                         foreach (var name in owp?.GetValueNames() ?? Array.Empty<string>())
-                            if (IsOurProgId(name)) owp!.DeleteValue(name, false);
+                            if (IsOurProgId(name, b)) owp!.DeleteValue(name, false);
                     DeleteIfEmpty(k, "OpenWithProgids");
                 }
                 if (fileExts != null) DeleteIfEmpty(fileExts, ext);
@@ -464,13 +518,13 @@ static class Installer
             foreach (var name in toasts?.GetValueNames() ?? Array.Empty<string>())
             {
                 int us = name.LastIndexOf('_');
-                if (us > 0 && IsOurProgId(name[..us])) toasts!.DeleteValue(name, false);
+                if (us > 0 && IsOurProgId(name[..us], b)) toasts!.DeleteValue(name, false);
             }
 
-        // Windows' cached display name / company for any VideoTrimmer.exe (MuiCache).
+        // Windows' cached display name / company for the exe (MuiCache).
         using (var mui = Registry.CurrentUser.OpenSubKey(@"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache", writable: true))
             foreach (var name in mui?.GetValueNames() ?? Array.Empty<string>())
-                if (name.Contains(@"\" + ExeName + ".", StringComparison.OrdinalIgnoreCase))
+                if (name.Contains(@"\" + b.ExeName + ".", StringComparison.OrdinalIgnoreCase))
                     mui!.DeleteValue(name, false);
         NotifyShell();
     }
@@ -489,19 +543,23 @@ static class Installer
     }
 
     /// <summary>
-    /// Deletes only what Video Trimmer put in the folder (exe, file icon, ffmpeg\, crash logs), then the folder if it's
+    /// Deletes only what the app put in the folder (exe, file icon, ffmpeg\, crash logs), then the folder if it's
     /// empty, so a custom location that holds other files is never wiped. If the exe is in use (this process, or the
     /// wizard that launched an elevated helper), a hidden cmd keeps retrying for up to two minutes until it's free.
     /// </summary>
-    static void RemoveOurFiles(string dir)
+    static void RemoveOurFiles(string dir, Brand? brand = null)
     {
-        string exe = Path.Combine(dir, ExeName);
+        var b = brand ?? Current;
+        string exe = Path.Combine(dir, b.ExeName);
         string ff = Path.Combine(dir, "ffmpeg");
         try
         {
             if (Directory.Exists(ff)) Directory.Delete(ff, recursive: true);
             if (File.Exists(exe)) File.Delete(exe);
-            foreach (var ico in Directory.GetFiles(dir, "VideoTrimmer-*.ico")) File.Delete(ico);
+            foreach (var ico in Directory.GetFiles(dir, b.IconPattern)) File.Delete(ico);
+            if (b == Current)
+                foreach (var doc in new[] { AppInfo.LicenseFile, AppInfo.NoticesFile })
+                    if (File.Exists(Path.Combine(dir, doc))) File.Delete(Path.Combine(dir, doc));
             string logs = Path.Combine(dir, "CrashLogs");
             if (Directory.Exists(logs)) Directory.Delete(logs, recursive: true);
             if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
@@ -511,7 +569,8 @@ static class Installer
 
         string cmd = $"/c for /l %i in (1,1,120) do @(if exist \"{exe}\" (del /f /q \"{exe}\" >nul 2>&1 & if exist \"{exe}\" ping -n 2 127.0.0.1 >nul))" +
                      $" & rmdir /s /q \"{ff}\" >nul 2>&1" +
-                     $" & del /f /q \"{Path.Combine(dir, "VideoTrimmer-*.ico")}\" >nul 2>&1" +
+                     $" & del /f /q \"{Path.Combine(dir, b.IconPattern)}\" >nul 2>&1" +
+                     (b == Current ? $" & del /f /q \"{Path.Combine(dir, AppInfo.LicenseFile)}\" \"{Path.Combine(dir, AppInfo.NoticesFile)}\" >nul 2>&1" : "") +
                      $" & rmdir /s /q \"{Path.Combine(dir, "CrashLogs")}\" >nul 2>&1 & rmdir \"{dir}\" >nul 2>&1";
         Process.Start(new ProcessStartInfo("cmd.exe", cmd) { CreateNoWindow = true, UseShellExecute = false, WorkingDirectory = Path.GetTempPath() });
     }
@@ -565,9 +624,10 @@ static class Installer
         catch { /* shortcuts are optional */ }
     }
 
-    /// <summary>Deletes a shortcut only if it points at a VideoTrimmer.exe (never a user's unrelated .lnk with the same name).</summary>
-    static void DeleteIfOurs(string lnk)
+    /// <summary>Deletes a shortcut only if it points at the app's exe (never a user's unrelated .lnk with the same name).</summary>
+    static void DeleteIfOurs(string lnk, Brand? brand = null)
     {
+        string exeName = (brand ?? Current).ExeName;
         if (!File.Exists(lnk)) return;
         try
         {
@@ -576,7 +636,7 @@ static class Installer
             {
                 dynamic shell = Activator.CreateInstance(t)!;
                 string target = shell.CreateShortcut(lnk).TargetPath;
-                if (!target.EndsWith(ExeName, StringComparison.OrdinalIgnoreCase)) return;
+                if (!target.EndsWith(exeName, StringComparison.OrdinalIgnoreCase)) return;
             }
             File.Delete(lnk);
         }

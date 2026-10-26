@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 enum ExportFormat { H264, Hevc, Original }
 enum ExportQuality { High, Balanced, Small }
@@ -351,7 +351,7 @@ static class Exporter
         bool sound = s.IncludeAudio && info.HasAudio;
 
         string dir = Path.GetDirectoryName(Path.GetFullPath(s.OutputPath))!;
-        var work = Directory.CreateDirectory(Path.Combine(dir, $".videotrimmer-{Guid.NewGuid():N}"));
+        var work = Directory.CreateDirectory(Path.Combine(dir, $".splicia-{Guid.NewGuid():N}"));
         work.Attributes |= FileAttributes.Hidden;
         try
         {

@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>Locations and helpers shared by the harness tests.</summary>
 static class H
@@ -50,6 +50,7 @@ static class Program
                 case "vids": MakeVideos(); break;
                 case "crop": CropTests.Run(); break;
                 case "ui": CropUiTests.Run(); break;
+                case "brand": BrandUiTests.Run(); break;
                 default: Console.WriteLine($"unknown mode {mode}"); return 1;
             }
         }

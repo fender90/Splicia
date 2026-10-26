@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// 48 kHz stereo 16-bit sound through waveOut. <see cref="Write"/> never blocks: PCM goes into a queue that a feeder

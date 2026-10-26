@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using FFmpeg.AutoGen;
 using static FFmpeg.AutoGen.ffmpeg;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>What the app knows about an opened file. Times are seconds from the start of the file.</summary>
 sealed record MediaInfo

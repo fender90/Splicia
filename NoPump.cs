@@ -1,4 +1,4 @@
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Parallel loop for use on the UI thread. A plain Parallel.For blocks the STA thread in a wait that keeps pumping

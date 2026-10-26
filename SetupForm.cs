@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Install / update / uninstall wizard in the app's design language: borderless dark window with rounded corners,
@@ -13,7 +13,7 @@ sealed class SetupForm : PagedWindow
     const int WinW = 820, WinH = 520, HeroW = 300, Gutter = 44, PageTop = 64, PageBottom = 32;
 
     readonly Image? _hero;
-    readonly Font _heroTitle = new("Segoe UI Semibold", 22f), _heroSub = new("Segoe UI", 10f);
+    readonly Font _heroTitle = new("Segoe UI Semibold", 22f), _heroSub = new("Segoe UI", 10f), _heroBy = new("Segoe UI Semibold", 10.5f);
     readonly InstallScope? _uninstallScope;
 
     InstallScope _scope;
@@ -25,18 +25,32 @@ sealed class SetupForm : PagedWindow
     /// <param name="uninstall">Start on the uninstall flow (Settings → Apps).</param>
     /// <param name="uninstallScope">Which installation Settings asked to remove; null = whatever is installed.</param>
     public SetupForm(bool uninstall, InstallScope? uninstallScope = null)
-        : base(uninstall ? "Uninstall Video Trimmer" : "Video Trimmer Setup", new Size(WinW, WinH),
+        : base(uninstall ? "Uninstall Splicia" : "Splicia Setup", new Size(WinW, WinH),
             new Rectangle(HeroW + Gutter, PageTop, WinW - HeroW - 2 * Gutter, WinH - PageTop - PageBottom), minimizeBox: true)
     {
         StartPosition = FormStartPosition.CenterScreen;
         _uninstallScope = uninstallScope;
 
-        using (var s = typeof(SetupForm).Assembly.GetManifestResourceStream("VideoTrimmer.hero.jpg"))
+        using (var s = typeof(SetupForm).Assembly.GetManifestResourceStream("Splicia.hero.jpg"))
             if (s != null) _hero = Image.FromStream(s);
 
         // Default to the scope that's already installed (so an update stays where it is), else "me only".
         _scope = Installer.InstalledDirectory(InstallScope.CurrentUser) == null && Installer.InstalledDirectory(InstallScope.AllUsers) != null
             ? InstallScope.AllUsers : InstallScope.CurrentUser;
+
+        // Publisher's website under "by Vesperis Labs" in the art panel (a real link: the rest of the window drags it)
+        var site = new LinkLabel
+        {
+            Text = AppInfo.WebsiteLabel, Font = _heroSub, AutoSize = true, BackColor = Theme.Bg,
+            LinkColor = Theme.AccentHover, ActiveLinkColor = Color.White, VisitedLinkColor = Theme.AccentHover,
+            LinkBehavior = LinkBehavior.HoverUnderline, Location = new Point(P(31), ClientSize.Height - P(72)),
+        };
+        site.LinkClicked += (_, _) =>
+        {
+            try { Process.Start(new ProcessStartInfo(AppInfo.Website) { UseShellExecute = true }); }
+            catch (Exception ex) { CrashLog.Write(ex, "Opening the website"); }
+        };
+        Controls.Add(site);
 
         if (uninstall) ShowUninstallConfirm(fromSetup: false); else ShowScope();
     }
@@ -48,10 +62,10 @@ sealed class SetupForm : PagedWindow
         var g = e.Graphics;
         g.Clear(Theme.Bg);
         var hero = new Rectangle(0, 0, P(HeroW), ClientSize.Height);
-        // Square artwork, sized so the emblem fits the panel width; it sits at the top and fades out into the
-        // background, leaving the bottom for the title.
-        int art = P(440);
-        var artRect = new Rectangle((hero.Width - art) / 2, 0, art, art);
+        // Portrait artwork at the panel's width, top-aligned; it fades out into the background at its foot and along the
+        // edge facing the page, leaving the bottom for the title.
+        int artH = _hero == null ? 0 : (int)Math.Round(hero.Width * _hero.Height / (double)_hero.Width);
+        var artRect = new Rectangle(0, 0, hero.Width, artH);
         if (_hero != null)
         {
             var st = g.Save();
@@ -62,20 +76,22 @@ sealed class SetupForm : PagedWindow
             g.Restore(st);
         }
         // Brush rects are 1 px larger than the fill so GDI+ never wraps the gradient (which leaves a seam line).
-        var fade = new Rectangle(0, artRect.Bottom - P(170), hero.Width, P(170) + 1);
+        var fade = new Rectangle(0, artRect.Bottom - P(56), hero.Width, P(56) + 1);
         using (var lg = new LinearGradientBrush(Rectangle.Inflate(fade, 0, 1), Color.FromArgb(0, Theme.Bg), Theme.Bg, 90f))
             g.FillRectangle(lg, fade);
         using (var below = new SolidBrush(Theme.Bg)) g.FillRectangle(below, 0, fade.Bottom, hero.Width, hero.Height - fade.Bottom);
-        var edge = new Rectangle(hero.Right - P(70), 0, P(70) + 1, hero.Height);
+        var edge = new Rectangle(hero.Right - P(28), 0, P(28) + 1, hero.Height);
         using (var lg = new LinearGradientBrush(Rectangle.Inflate(edge, 1, 0), Color.FromArgb(0, Theme.Bg), Theme.Bg, 0f))
             g.FillRectangle(lg, edge);
 
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         using var white = new SolidBrush(Color.White);
         using var dim = new SolidBrush(Theme.Dim);
-        g.DrawString("Video Trimmer", _heroTitle, white, P(30), hero.Height - P(112));
-        g.DrawString($"Version {Installer.Version}", _heroSub, dim, P(32), hero.Height - P(70));
-        g.DrawString("Trim, rotate and export videos", _heroSub, dim, P(32), hero.Height - P(48));
+        using var fg = new SolidBrush(Theme.Fg);
+        g.DrawString(AppInfo.Name, _heroTitle, white, P(30), hero.Height - P(134));
+        g.DrawString($"by {AppInfo.Publisher}", _heroBy, fg, P(32), hero.Height - P(92));
+        // the website link (a LinkLabel) sits at hero.Height - 72
+        g.DrawString($"Version {Installer.Version}", _heroSub, dim, P(32), hero.Height - P(42));
     }
 
     // ───────────────────────── 1. installation type ─────────────────────────
@@ -86,8 +102,10 @@ sealed class SetupForm : PagedWindow
         var installed = Installer.InstalledScopes().ToList();
         AddText("Choose installation type", H1, Theme.Fg);
         AddText(installed.Count == 0
-                ? "Install Video Trimmer just for your account, or for everyone who uses this PC."
-                : $"Video Trimmer {Installer.InstalledVersion(installed[0])} is installed for {ScopeName(installed[0])}." +
+                ? Installer.LegacyScopes().Any()
+                    ? "Video Trimmer is now Splicia. Install it just for your account, or for everyone who uses this PC."
+                    : "Install Splicia just for your account, or for everyone who uses this PC."
+                : $"Splicia {Installer.InstalledVersion(installed[0])} is installed for {ScopeName(installed[0])}." +
                   (installed.Count > 1 ? " It's also installed for you only." : ""),
             Body, Theme.Dim, 6);
 
@@ -99,6 +117,8 @@ sealed class SetupForm : PagedWindow
         all.Selected = _scope == InstallScope.AllUsers;
         me.SelectedChanged += (_, _) => { if (me.Selected) { all.Selected = false; _scope = InstallScope.CurrentUser; } };
         all.SelectedChanged += (_, _) => { if (all.Selected) { me.Selected = false; _scope = InstallScope.AllUsers; } };
+
+        AddFootnote($"{AppInfo.Name} is free under the {AppInfo.License} license.\n{AppInfo.Copyright}  ·  {AppInfo.WebsiteLabel}");
 
         var left = new List<PillButton> { Button("Cancel", PillButton.Kind.Ghost, TryClose) };
         if (installed.Count > 0) left.Add(Button("Uninstall", PillButton.Kind.Ghost, () => ShowUninstallConfirm(fromSetup: true)));
@@ -122,7 +142,7 @@ sealed class SetupForm : PagedWindow
         string verb = installed == null ? "Install" : cmp > 0 ? "Update" : cmp == 0 ? "Reinstall" : "Install";
         bool needsAdmin = scope == InstallScope.AllUsers && !Installer.IsElevated;
 
-        AddText($"{verb} Video Trimmer", H1, Theme.Fg);
+        AddText($"{verb} Splicia", H1, Theme.Fg);
         string who = scope == InstallScope.AllUsers ? "For everyone on this PC." : "For your account only.";
         AddText(installed == null
                 ? $"{who} Choose where to put it and which shortcuts you'd like."
@@ -148,12 +168,14 @@ sealed class SetupForm : PagedWindow
 
         bool fresh = installed == null;
         _startMenu = AddControl(new ToggleSwitch("Start menu shortcut", fresh || Installer.HasStartMenuShortcut(scope),
-            scope == InstallScope.AllUsers ? "In everyone's Start menu" : "Find Video Trimmer from the Start menu"), P(46), 0);
+            scope == InstallScope.AllUsers ? "In everyone's Start menu" : "Find Splicia from the Start menu"), P(46), 0);
         _desktop = AddControl(new ToggleSwitch("Desktop shortcut", Installer.HasDesktopShortcut(scope),
             scope == InstallScope.AllUsers ? "On everyone's desktop" : "Put an icon on your desktop"), P(46), 12);
 
         if (Installer.InstalledDirectory(OtherScope) != null)
             AddFootnote($"The copy installed for {ScopeName(OtherScope)} will be removed.");
+        else if (Installer.LegacyScopes().Contains(scope))
+            AddFootnote("Video Trimmer, Splicia's previous name, is installed: Splicia replaces it.");
 
         Footer(new[] { Button("Cancel", PillButton.Kind.Ghost, TryClose) },
             Button("Back", PillButton.Kind.Secondary, ShowScope),
@@ -166,7 +188,7 @@ sealed class SetupForm : PagedWindow
         string current = _path.Text.Trim();
         using var dlg = new FolderBrowserDialog
         {
-            Description = "Choose where to install Video Trimmer",
+            Description = "Choose where to install Splicia",
             UseDescriptionForTitle = true,
             ShowNewFolderButton = true,
             InitialDirectory = Directory.Exists(current) ? current : Path.GetDirectoryName(current) ?? "",
@@ -175,8 +197,7 @@ sealed class SetupForm : PagedWindow
         string dir = dlg.SelectedPath.TrimEnd('\\');
         // Keep the app in its own folder unless the user already picked one named for it.
         string name = Path.GetFileName(dir);
-        if (!name.Equals("VideoTrimmer", StringComparison.OrdinalIgnoreCase) && !name.Equals("Video Trimmer", StringComparison.OrdinalIgnoreCase))
-            dir = Path.Combine(dir, _scope == InstallScope.AllUsers ? "Video Trimmer" : "VideoTrimmer");
+        if (!name.Equals("Splicia", StringComparison.OrdinalIgnoreCase)) dir = Path.Combine(dir, "Splicia");
         _path.Text = dir;
     }
 
@@ -189,14 +210,19 @@ sealed class SetupForm : PagedWindow
         if (Installer.CheckDirectory(dir, scope) is string problem) { ShowInlineError(problem); return; }
         if (Installer.IsRunningFrom(dir) || Installer.InstalledScopes().Any(s => Installer.IsRunningFrom(Installer.InstalledDirectory(s)!)))
         {
-            ShowInlineError("Video Trimmer is open. Close it, then try again.");
+            ShowInlineError("Splicia is open. Close it, then try again.");
+            return;
+        }
+        if (Installer.LegacyRunning())
+        {
+            ShowInlineError("Video Trimmer (Splicia's old name) is open. Close it, then try again; this replaces it.");
             return;
         }
         var options = new InstallOptions(scope, Path.GetFullPath(dir), _startMenu.Checked, _desktop.Checked);
         bool updating = verb == "Update";
         bool moveFromOther = Installer.InstalledDirectory(OtherScope) != null;
         var other = OtherScope;
-        ShowProgress(updating ? "Updating Video Trimmer" : "Installing Video Trimmer");
+        ShowProgress(updating ? "Updating Splicia" : "Installing Splicia");
         Run(report =>
         {
             // Scale the steps so moving away from the other scope gets the last part of the bar.
@@ -268,13 +294,13 @@ sealed class SetupForm : PagedWindow
     {
         NewPage();
         AddControl(new ResultBadge { Success = true }, P(68), 0, width: P(68));
-        AddText(updated ? "Video Trimmer is up to date" : "Video Trimmer is ready", H1, Theme.Fg, 18);
+        AddText(updated ? "Splicia is up to date" : "Splicia is ready", H1, Theme.Fg, 18);
         AddText(_scope == InstallScope.AllUsers
-                ? "Everyone on this PC can open it from the Start menu, or right-click a video and choose Open with → Video Trimmer."
-                : "Open it from the Start menu, or right-click any video and choose Open with → Video Trimmer.",
+                ? "Everyone on this PC can open it from the Start menu, or right-click a video and choose Open with → Splicia."
+                : "Open it from the Start menu, or right-click any video and choose Open with → Splicia.",
             Body, Theme.Dim, 6);
 
-        _launch = AddControl(new ToggleSwitch("Launch Video Trimmer", true), P(28), 26);
+        _launch = AddControl(new ToggleSwitch("Launch Splicia", true), P(28), 26);
         Footer(null, Button("Finish", PillButton.Kind.Primary, () =>
         {
             if (_launch.Checked) LaunchApp();
@@ -316,13 +342,13 @@ sealed class SetupForm : PagedWindow
         var targets = UninstallTargets();
         if (targets.Count == 0)
         {
-            AddText("Video Trimmer isn't installed", H1, Theme.Fg);
+            AddText("Splicia isn't installed", H1, Theme.Fg);
             AddText("There's nothing to remove.", Body, Theme.Dim, 6);
             Footer(null, Button("Close", PillButton.Kind.Primary, TryClose));
             return;
         }
-        AddText("Uninstall Video Trimmer", H1, Theme.Fg);
-        AddText("This removes Video Trimmer, its shortcuts and its Open with entries for video files. " +
+        AddText("Uninstall Splicia", H1, Theme.Fg);
+        AddText("This removes Splicia, its shortcuts and its Open with entries for video files. " +
                 "Your videos, including ones you exported, are not touched.", Body, Theme.Dim, 6);
         foreach (var s in targets)
         {
@@ -345,10 +371,10 @@ sealed class SetupForm : PagedWindow
         var targets = UninstallTargets();
         if (targets.Any(s => Installer.IsRunningFrom(Installer.InstalledDirectory(s)!)))
         {
-            ShowInlineError("Video Trimmer is open. Close it, then click Uninstall again.");
+            ShowInlineError("Splicia is open. Close it, then click Uninstall again.");
             return;
         }
-        ShowProgress("Removing Video Trimmer");
+        ShowProgress("Removing Splicia");
         Run(report =>
         {
             for (int i = 0; i < targets.Count; i++)
@@ -370,7 +396,7 @@ sealed class SetupForm : PagedWindow
     {
         NewPage();
         AddControl(new ResultBadge { Success = true }, P(68), 0, width: P(68));
-        AddText("Video Trimmer has been removed", H1, Theme.Fg, 18);
+        AddText("Splicia has been removed", H1, Theme.Fg, 18);
         AddText("Its shortcuts and Open with entries are gone. Your videos were left untouched.", Body, Theme.Dim, 6);
         Footer(null, Button("Close", PillButton.Kind.Primary, TryClose));
     }

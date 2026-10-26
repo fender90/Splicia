@@ -1,16 +1,18 @@
 using System.Drawing.Drawing2D;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>Colours and helpers shared by the setup wizard (same palette as the player and its dialogs).</summary>
 static class Theme
 {
-    public static readonly Color Bg = Color.FromArgb(24, 26, 32), Field = Color.FromArgb(36, 39, 47),
-        Fg = Color.FromArgb(232, 234, 238), Dim = Color.FromArgb(150, 156, 168), Faint = Color.FromArgb(105, 110, 122),
-        Accent = Color.FromArgb(70, 140, 255), AccentHover = Color.FromArgb(98, 160, 255), AccentDown = Color.FromArgb(55, 118, 225),
-        Btn = Color.FromArgb(52, 56, 66), BtnHover = Color.FromArgb(66, 71, 84), BtnDown = Color.FromArgb(44, 47, 56),
+    // Deep navy from the logo's night sky, indigo surfaces, and the logo's blue → violet for the main actions.
+    public static readonly Color Bg = Color.FromArgb(7, 11, 32), Field = Color.FromArgb(17, 23, 54),
+        Fg = Color.FromArgb(234, 238, 248), Dim = Color.FromArgb(150, 160, 194), Faint = Color.FromArgb(102, 112, 150),
+        Accent = Color.FromArgb(64, 140, 255), AccentHover = Color.FromArgb(96, 162, 255), AccentDown = Color.FromArgb(52, 116, 225),
+        Violet = Color.FromArgb(139, 92, 246), VioletHover = Color.FromArgb(162, 122, 255), VioletDown = Color.FromArgb(118, 76, 220),
+        Btn = Color.FromArgb(32, 40, 80), BtnHover = Color.FromArgb(44, 54, 102), BtnDown = Color.FromArgb(26, 32, 66),
         Danger = Color.FromArgb(222, 72, 72), DangerHover = Color.FromArgb(236, 96, 96), Good = Color.FromArgb(96, 196, 128),
-        Border = Color.FromArgb(64, 68, 80);
+        Border = Color.FromArgb(44, 54, 98);
 
     public static GraphicsPath Round(RectangleF r, float radius)
     {
@@ -121,7 +123,16 @@ sealed class PillButton : DrawnControl, IButtonControl
         if (!Enabled) { fill = Theme.Blend(fill, Parent?.BackColor ?? Theme.Bg, 0.55f); text = Theme.Faint; }
         using (var path = Theme.Round(r, r.Height / 2))
         {
-            using (var b = new SolidBrush(fill)) g.FillPath(b, path);
+            if (Style == Kind.Primary && Enabled)
+            {
+                // The logo's blue → violet
+                var end = Down ? Theme.VioletDown : Hover ? Theme.VioletHover : Theme.Violet;
+                using var gb = new LinearGradientBrush(RectangleF.Inflate(r, 1, 1), fill, end, 0f);
+                g.FillPath(gb, path);
+                fill = Theme.Blend(fill, end, 0.5f); // text background for ClearType
+            }
+            else
+                using (var b = new SolidBrush(fill)) g.FillPath(b, path);
             if (Focused && ShowFocusCues)
                 using (var p = new Pen(Theme.AccentHover, Px(2))) g.DrawPath(p, path);
         }
@@ -310,7 +321,7 @@ sealed class ThinProgress : DrawnControl
         float w = (float)((Width - 1) * _shown);
         if (w > h)
             using (var fill = Theme.Round(new RectangleF(0, y, w, h), h / 2))
-            using (var fb = new LinearGradientBrush(new RectangleF(0, y, Math.Max(w, 1), h), Theme.Accent, Theme.AccentHover, 0f))
+            using (var fb = new LinearGradientBrush(new RectangleF(0, y, Math.Max(Width, 1), h), Theme.Accent, Theme.Violet, 0f))
                 g.FillPath(fb, fill);
     }
 

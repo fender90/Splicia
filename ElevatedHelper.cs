@@ -3,7 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO.Pipes;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// All-users installs need administrator rights, but the wizard itself stays unelevated (so it can launch the app as
@@ -24,7 +24,7 @@ static class ElevatedHelper
 
     static void Run(Action<string, double> progress, params string[] args)
     {
-        string pipe = "VideoTrimmerSetup-" + Guid.NewGuid().ToString("N");
+        string pipe = "SpliciaSetup-" + Guid.NewGuid().ToString("N");
         using var server = new NamedPipeServerStream(pipe, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
         var psi = new ProcessStartInfo(Environment.ProcessPath!)
         {

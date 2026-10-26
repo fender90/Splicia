@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>
 /// Borderless dark window with rounded corners and a minimise/close pill, whose content is a page of stacked text,

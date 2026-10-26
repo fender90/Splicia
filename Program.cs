@@ -1,4 +1,4 @@
-namespace VideoTrimmer;
+namespace Splicia;
 
 static class Program
 {
@@ -20,7 +20,7 @@ static class Program
         if (Has("--install") && quiet) return Installer.InstallQuiet(scope);
         if (Has("--uninstall") && quiet) return Installer.UninstallQuiet(scope);
 
-        // Uninstall from Settings → Apps, or the setup wizard (the setup exe *is* the app: VideoTrimmer-Setup*.exe)
+        // Uninstall from Settings → Apps, or the setup wizard (the setup exe *is* the app: Splicia-Setup*.exe)
         if (Has("--uninstall"))
         {
             Application.Run(new SetupForm(uninstall: true, uninstallScope: scope));
@@ -33,7 +33,7 @@ static class Program
             return 0;
         }
 
-        Application.Run(new TrimmerForm(args.FirstOrDefault(a => !a.StartsWith("--"))));
+        Application.Run(new MainForm(args.FirstOrDefault(a => !a.StartsWith("--"))));
         return 0;
     }
 }

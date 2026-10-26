@@ -1,6 +1,6 @@
 using System.Drawing;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>Cropped exports: output size and picture, plain / rotated / back-and-forth / 4K HDR.</summary>
 static class CropTests

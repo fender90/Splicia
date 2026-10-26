@@ -1,56 +1,75 @@
-namespace VideoTrimmer;
+namespace Splicia;
 
-/// <summary>Keyboard and mouse shortcuts, grouped, in the same style as the other dialogs.</summary>
-sealed class ShortcutsDialog : DarkDialog
+/// <summary>Keyboard and mouse shortcuts in two columns, in the app's borderless window style.</summary>
+sealed class ShortcutsDialog : PagedWindow
 {
-    public ShortcutsDialog() : base("Video Trimmer — shortcuts", 460)
-    {
-        AddText("Keyboard & mouse shortcuts", H1);
+    const int WinW = 820, WinH = 520, Gutter = 40, PageTop = 44, PageBottom = 28, Column = 360, KeyW = 176;
 
-        Group("Playback",
+    static readonly (string Title, (string Keys, string Action)[] Rows)[] LeftColumn =
+    {
+        ("PLAYBACK", new[]
+        {
             ("Space", "Play / pause"),
             ("← / →, mouse wheel", "Previous / next frame"),
             ("Shift + ← / →", "Back / forward 1 s"),
             ("Ctrl + ← / →, PgUp / PgDn", "Back / forward 10 s"),
             ("Home / End", "Start / end of the selection"),
             ("↑ / ↓", "Volume"),
-            ("M", "Mute"));
-
-        Group("Trim & rotate",
-            ("I  or  [", "Start the selection at this frame"),
-            ("O  or  ]", "End the selection at this frame"),
-            ("Drag the yellow handles", "Adjust the start and end"),
-            ("R / Shift + R", "Rotate right / left"),
-            ("C", "Crop (again to finish)"),
-            ("Enter / Esc", "Keep / undo the crop changes"),
-            ("Ctrl + E", "Export"));
-
-        Group("View & file",
+            ("M", "Mute"),
+        }),
+        ("VIEW & FILE", new[]
+        {
             ("Ctrl + O", "Open a video"),
             ("Ctrl + wheel, pinch", "Zoom at the cursor"),
             ("Ctrl + 0", "Reset zoom"),
             ("F, F11, double-click", "Fullscreen"),
-            ("Esc", "Leave fullscreen"));
+            ("Esc", "Leave fullscreen"),
+        }),
+    };
 
-        AddButtons(("Close", true, Close));
+    static readonly (string Title, (string Keys, string Action)[] Rows)[] RightColumn =
+    {
+        ("TRIM, ROTATE & CROP", new[]
+        {
+            ("I  or  [", "Start the selection at this frame"),
+            ("O  or  ]", "End the selection at this frame"),
+            ("Drag the yellow handles", "Adjust the start and end"),
+            ("Drag the grip under it", "Move the selection"),
+            ("R / Shift + R", "Rotate right / left"),
+            ("C", "Crop (again to finish)"),
+            ("Enter / Esc", "Keep / undo crop changes"),
+            ("Ctrl + E", "Export"),
+        }),
+    };
+
+    readonly Font _key = new("Segoe UI Semibold", 9.5f), _action = new("Segoe UI", 9.5f);
+
+    public ShortcutsDialog()
+        : base($"{AppInfo.Name} — shortcuts", new Size(WinW, WinH), new Rectangle(Gutter, PageTop, WinW - 2 * Gutter, WinH - PageTop - PageBottom), minimizeBox: false)
+    {
+        StartPosition = FormStartPosition.CenterParent;
+        ShowInTaskbar = false;
+
+        AddText("Keyboard & mouse shortcuts", H1, Theme.Fg);
+        int top = Y + P(14);
+        PlaceGroups(LeftColumn, 0, top);
+        PlaceGroups(RightColumn, P(Column + 20), top);
+        Footer(null, Button("Close", PillButton.Kind.Primary, Close));
     }
 
-    void Group(string title, params (string Keys, string Action)[] rows)
+    void PlaceGroups((string Title, (string Keys, string Action)[] Rows)[] groups, int x, int y)
     {
-        AddHeading(title);
-        var table = new TableLayoutPanel
+        foreach (var (title, rows) in groups)
         {
-            ColumnCount = 2, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Margin = new Padding(0, LogicalToDeviceUnits(4), 0, 0), MinimumSize = new Size(ContentWidth, 0),
-        };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, LogicalToDeviceUnits(210)));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        foreach (var (keys, action) in rows)
-        {
-            var pad = new Padding(0, LogicalToDeviceUnits(2), 0, LogicalToDeviceUnits(2));
-            table.Controls.Add(new Label { Text = keys, AutoSize = true, UseMnemonic = false, Font = H2, ForeColor = Fg, Margin = pad });
-            table.Controls.Add(new Label { Text = action, AutoSize = true, UseMnemonic = false, ForeColor = Dim, Margin = pad });
+            Page.Controls.Add(new PassLabel { Text = title, Font = Section, ForeColor = Theme.Faint, BackColor = Theme.Bg, AutoSize = true, Location = new Point(x, y) });
+            y += P(24);
+            foreach (var (keys, action) in rows)
+            {
+                Page.Controls.Add(new PassLabel { Text = keys, Font = _key, ForeColor = Theme.Fg, BackColor = Theme.Bg, AutoSize = true, Location = new Point(x, y) });
+                Page.Controls.Add(new PassLabel { Text = action, Font = _action, ForeColor = Theme.Dim, BackColor = Theme.Bg, AutoSize = true, Location = new Point(x + P(KeyW), y) });
+                y += P(23);
+            }
+            y += P(16);
         }
-        Content.Controls.Add(table);
     }
 }

@@ -8,11 +8,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <AssemblyName>VideoTrimmer</AssemblyName>
-    <Product>Video Trimmer</Product>
-    <AssemblyTitle>Video Trimmer</AssemblyTitle>
-    <Description>Trim, rotate and crop videos</Description>
-    <Version>1.2.0</Version>
+    <AssemblyName>Splicia</AssemblyName>
+    <Product>Splicia</Product>
+    <AssemblyTitle>Splicia</AssemblyTitle>
+    <Description>Trim, rotate, crop and export videos</Description>
+    <Company>Vesperis Labs</Company>
+    <Authors>Vesperis Labs</Authors>
+    <Copyright>© 2026 Vesperis Labs. Licensed under CC BY 4.0.</Copyright>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <!-- One self-contained exe: the .NET runtime is bundled. FFmpeg ships next to it in the ffmpeg\ folder (the setup exe
          carries it as a payload appended by build.ps1), so nothing is extracted to %TEMP% at startup. -->
@@ -30,9 +32,13 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Written out by the installer as the video file-type icon -->
-    <EmbeddedResource Include="app.ico" LogicalName="VideoTrimmer.app.ico" />
+    <EmbeddedResource Include="app.ico" LogicalName="Splicia.app.ico" />
     <!-- Setup wizard artwork -->
-    <EmbeddedResource Include="hero.jpg" LogicalName="VideoTrimmer.hero.jpg" />
+    <EmbeddedResource Include="hero.jpg" LogicalName="Splicia.hero.jpg" />
+    <!-- License and notices: written next to the exe by the installer, and copied beside the built exe -->
+    <EmbeddedResource Include="LICENSE.txt" LogicalName="Splicia.LICENSE.txt" />
+    <EmbeddedResource Include="THIRD-PARTY-NOTICES.txt" LogicalName="Splicia.THIRD-PARTY-NOTICES.txt" />
+    <None Include="LICENSE.txt;THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <ItemGroup>
     <!-- FFmpeg runtime (DLLs + ffmpeg.exe) next to the built exe, for running from bin\ or publish\ -->

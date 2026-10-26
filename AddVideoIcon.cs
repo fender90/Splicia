@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace VideoTrimmer;
+namespace Splicia;
 
 /// <summary>"Add video" glyph (film frame + play + plus), converted from the supplied vector EPS.
 /// Coordinates are normalised to a 0..1 square; fill with FillMode.Winding.</summary>
