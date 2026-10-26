@@ -6,3 +6,5 @@ CrashLogs/
 ffmpeg/*.dll
 ffmpeg/*.exe
 *.user
+tests/Harness/vids/
+tests/Harness/out/

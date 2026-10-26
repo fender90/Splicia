@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Headless test harness: compiles the app's sources (minus Program.cs) into a console exe.
+       Run: bin/Release/net8.0-windows/harness.exe [vids] [crop] [ui] -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>VideoTrimmer</RootNamespace>
+    <AssemblyName>harness</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+    <Compile Include="..\..\*.cs" Exclude="..\..\Program.cs" />
+    <EmbeddedResource Include="..\..\app.ico" LogicalName="VideoTrimmer.app.ico" />
+    <EmbeddedResource Include="..\..\hero.jpg" LogicalName="VideoTrimmer.hero.jpg" />
+    <None Include="..\..\ffmpeg\*.dll;..\..\ffmpeg\ffmpeg.exe;..\..\ffmpeg\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" Link="ffmpeg\%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

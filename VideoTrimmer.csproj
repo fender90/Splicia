@@ -11,8 +11,8 @@
     <AssemblyName>VideoTrimmer</AssemblyName>
     <Product>Video Trimmer</Product>
     <AssemblyTitle>Video Trimmer</AssemblyTitle>
-    <Description>Trim and rotate videos</Description>
-    <Version>1.1.0</Version>
+    <Description>Trim, rotate and crop videos</Description>
+    <Version>1.2.0</Version>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <!-- One self-contained exe: the .NET runtime is bundled. FFmpeg ships next to it in the ffmpeg\ folder (the setup exe
          carries it as a payload appended by build.ps1), so nothing is extracted to %TEMP% at startup. -->
@@ -23,6 +23,10 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+    <!-- tests\Harness is its own project -->
+    <Compile Remove="tests\**" />
+    <None Remove="tests\**" />
+    <EmbeddedResource Remove="tests\**" />
   </ItemGroup>
   <ItemGroup>
     <!-- Written out by the installer as the video file-type icon -->

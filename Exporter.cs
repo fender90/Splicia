@@ -11,12 +11,23 @@ enum ExportQuality { High, Balanced, Small }
 sealed record ExportSettings(ExportFormat Format, ExportQuality Quality, bool IncludeAudio, string OutputPath,
     bool Boomerang = false, int Repeats = 1);
 
-/// <summary>A trim of one file: the selected range and the extra clockwise rotation to apply.</summary>
+/// <summary>A trim of one file: the selected range, the extra clockwise rotation and an optional crop.</summary>
 sealed record TrimJob(MediaInfo Info, double Start, double End, int Rotation)
 {
     public double Length => End - Start;
     /// <summary>Rotation the result is shown with (the file's own plus the user's).</summary>
     public int TotalRotation => (Info.Rotation + Rotation) % 360;
+
+    /// <summary>Part of the picture to keep, as fractions (0..1) of the picture as shown, after rotation. Null = all.</summary>
+    public RectangleF? Crop { get; init; }
+
+    /// <summary>Size of the exported picture (display pixels: rotated, cropped, even).</summary>
+    public (int W, int H) OutputSize()
+    {
+        var (w, h) = Info.DisplaySize(Rotation);
+        if (Crop is RectangleF c) { w = (int)(w * c.Width); h = (int)(h * c.Height); }
+        return (Math.Max(2, w & ~1), Math.Max(2, h & ~1));
+    }
 }
 
 /// <summary>Runs ffmpeg.exe to write the trimmed / rotated file.</summary>
@@ -39,6 +50,7 @@ static class Exporter
     /// <summary>Why "Original" (stream copy) isn't possible for this job, or null.</summary>
     public static string? OriginalUnavailableReason(TrimJob job)
     {
+        if (job.Crop != null) return "Cropping needs re-encoding: choose H.264 or HEVC.";
         if (job.Rotation != 0 && !RotatableExtensions.Contains(OriginalExtension(job.Info)))
             return $"{OriginalExtension(job.Info).TrimStart('.').ToUpperInvariant()} files can't store a rotation, so rotating needs re-encoding.";
         return null;
@@ -136,6 +148,10 @@ static class Exporter
             case 180: filters.Add("hflip,vflip"); break;
             case 270: filters.Add("transpose=cclock"); break;
         }
+        // The crop is in fractions of the picture as shown, so it comes after the rotation. Sizes in stored pixels
+        // (iw/ih) keep a non-square pixel aspect right.
+        if (job.Crop is RectangleF c)
+            filters.Add($"crop=w=trunc(iw*{S(c.Width)}/2)*2:h=trunc(ih*{S(c.Height)}/2)*2:x=trunc(iw*{S(c.X)}):y=trunc(ih*{S(c.Y)})");
         // 4:2:0 needs even dimensions.
         filters.Add("crop=trunc(iw/2)*2:trunc(ih/2)*2");
         filters.Add($"format={(tenBit ? (useHw ? "p010le" : "yuv420p10le") : (useHw ? "nv12" : "yuv420p"))}");
@@ -324,7 +340,7 @@ static class Exporter
         var pieces = new List<(double From, double To, bool Reverse)> { (job.Start, job.End, false) };
         if (backTo - backFrom > fd * 0.5)
         {
-            var (w, h) = info.DisplaySize(job.Rotation);
+            var (w, h) = job.OutputSize();
             int perPiece = (int)Math.Clamp(ReverseBudgetBytes / (w * (double)h * enc.BytesPerPixel), 8, 240);
             var back = new List<(double, double, bool)>();
             for (double t = backFrom; t < backTo - fd * 0.5; t += perPiece * fd) back.Add((t, Math.Min(t + perPiece * fd, backTo), true));

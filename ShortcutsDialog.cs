@@ -21,6 +21,8 @@ sealed class ShortcutsDialog : DarkDialog
             ("O  or  ]", "End the selection at this frame"),
             ("Drag the yellow handles", "Adjust the start and end"),
             ("R / Shift + R", "Rotate right / left"),
+            ("C", "Crop (again to finish)"),
+            ("Enter / Esc", "Keep / undo the crop changes"),
             ("Ctrl + E", "Export"));
 
         Group("View & file",

@@ -56,9 +56,10 @@ sealed class ExportDialog : PagedWindow
 
     string Summary()
     {
-        var (w, h) = _info.DisplaySize(_job.Rotation);
+        var (w, h) = _job.OutputSize();
         string rot = _job.Rotation switch { 90 => "  ·  rotated 90° right", 180 => "  ·  rotated 180°", 270 => "  ·  rotated 90° left", _ => "" };
-        return $"{TrimmerForm.Fmt(_job.Start)} → {TrimmerForm.Fmt(_job.End)}  ·  {TrimmerForm.Length(_job.Length)}  ·  {w}×{h}{rot}";
+        string crop = _job.Crop != null ? "  ·  cropped" : "";
+        return $"{TrimmerForm.Fmt(_job.Start)} → {TrimmerForm.Fmt(_job.End)}  ·  {TrimmerForm.Length(_job.Length)}  ·  {w}×{h}{rot}{crop}";
     }
 
     /// <summary>Length of the exported video: the selection, or forwards + backwards (minus the two turn frames) × repeats.</summary>

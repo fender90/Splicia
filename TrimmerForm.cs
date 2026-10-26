@@ -9,15 +9,16 @@ namespace VideoTrimmer;
 /// Borderless, fully custom-drawn main window: the video with a frosted-glass control overlay holding a filmstrip
 /// timeline with yellow trim handles, playback, rotate and export controls.
 /// </summary>
-sealed class TrimmerForm : Form
+sealed partial class TrimmerForm : Form
 {
-    enum Hit { None, Center, Timeline, TrimIn, TrimOut, TrimMove, Play, Prev, Next, SetIn, SetOut, RotL, RotR, Vol, VolSlider, Loop, Full, More, Export, Min, Max, Close }
-    enum Drag { None, Seek, In, Out, Move, Volume }
+    enum Hit { None, Center, Timeline, TrimIn, TrimOut, TrimMove, Play, Prev, Next, SetIn, SetOut, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More, Export, Min, Max, Close }
+    enum Drag { None, Seek, In, Out, Move, Volume, Crop }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.Min, Hit.Max, Hit.Close, Hit.TrimIn, Hit.TrimOut, Hit.TrimMove, Hit.Timeline, Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut,
-        Hit.RotL, Hit.RotR, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
+        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.TrimIn, Hit.TrimOut, Hit.TrimMove, Hit.Timeline, Hit.Play, Hit.Prev, Hit.Next,
+        Hit.SetIn, Hit.SetOut, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
+        Hit.CropArea,
     };
     const double HideAfterSeconds = 2.5;
     static readonly Color TrimColor = Color.FromArgb(255, 199, 44);
@@ -33,7 +34,7 @@ sealed class TrimmerForm : Form
     Bitmap? _bmp, _blur, _view, _film;
     bool _blurDirty;
     int _frameVersion;
-    (int, float, PointF, Size) _viewKey;
+    (int, RectangleF, Rectangle, Size) _viewKey;
     (int, int, int, int) _filmKey;
 
     double _pos, _in, _out;      // seconds: frame on screen, selection start / end
@@ -86,7 +87,7 @@ sealed class TrimmerForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         ClientSize = new Size(P(1100), P(700));
-        MinimumSize = new Size(P(800), P(520));
+        MinimumSize = new Size(P(840), P(520));
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         AllowDrop = true;
@@ -315,6 +316,7 @@ sealed class TrimmerForm : Form
             Hit.SetOut => new Rectangle(left + 4 * step + P(16), rowY, bs, bs),
             Hit.RotL => new Rectangle(left + 5 * step + P(32), rowY, bs, bs),
             Hit.RotR => new Rectangle(left + 6 * step + P(32), rowY, bs, bs),
+            Hit.Crop => new Rectangle(left + 7 * step + P(32), rowY, bs, bs),
             Hit.Export => new Rectangle(exportX, rowY, ExportW, bs),
             Hit.More => new Rectangle(moreX, rowY, bs, bs),
             Hit.Full => new Rectangle(moreX - step, rowY, bs, bs),
@@ -336,9 +338,19 @@ sealed class TrimmerForm : Form
         if (_ui < 0.5f) return Hit.None;
         foreach (var h in HitOrder)
         {
+            if (h == Hit.CropBar)
+            {
+                if (_cropping && CropBarRect.Contains(p)) return h;
+                continue;
+            }
+            if (h == Hit.CropArea)
+            {
+                if (_cropping && CropPartAt(p) != CropPart.None) return h;
+                continue;
+            }
             if (h == Hit.Center)
             {
-                if (_info != null && _playing) continue; // the big button only shows while paused
+                if (_info != null && (_playing || _cropping)) continue; // the big button only shows while paused
                 var c = Rect(h);
                 float dx = p.X - (c.Left + c.Width / 2f), dy = p.Y - (c.Top + c.Height / 2f);
                 if (dx * dx + dy * dy <= c.Width * c.Width / 4f) return h;
@@ -390,9 +402,13 @@ sealed class TrimmerForm : Form
         get
         {
             if (_bmp == null) return RectangleF.Empty;
-            float s = Math.Min((float)ClientSize.Width / _bmp.Width, (float)ClientSize.Height / _bmp.Height) * _zoom;
-            float w = _bmp.Width * s, h = _bmp.Height * s;
-            return new RectangleF(ClientSize.Width / 2f - _center.X * w, ClientSize.Height / 2f - _center.Y * h, w, h);
+            // The part of the frame shown (the crop, or all of it while cropping), fitted to the window or, in crop mode,
+            // to the space between the aspect bar and the control panel.
+            var src = SourceRect;
+            var area = _cropping ? CropEditArea : new RectangleF(0, 0, ClientSize.Width, ClientSize.Height);
+            float s = Math.Min(area.Width / src.Width, area.Height / src.Height) * _zoom;
+            float w = src.Width * s, h = src.Height * s;
+            return new RectangleF(area.X + area.Width / 2f - _center.X * w, area.Y + area.Height / 2f - _center.Y * h, w, h);
         }
     }
 
@@ -411,7 +427,7 @@ sealed class TrimmerForm : Form
     /// <summary>Zooms by <paramref name="factor"/>, keeping the image point under <paramref name="anchor"/> fixed.</summary>
     void ZoomAt(float factor, Point anchor)
     {
-        if (_bmp == null) return;
+        if (_bmp == null || _cropping) return;
         var vr = VideoRectF;
         float u = (anchor.X - vr.X) / vr.Width, v = (anchor.Y - vr.Y) / vr.Height;
         float z = Math.Clamp(_zoom * factor, 1f, MaxZoom);
@@ -511,6 +527,7 @@ sealed class TrimmerForm : Form
 
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        if (_cropping && _bmp != null) DrawCropOverlay(g);
         if (_toast != null && Now < _toastUntil) DrawToast(g);
         if (_ui <= 0.01f) return;
         if (_blurDirty) UpdateBlur();
@@ -533,7 +550,7 @@ sealed class TrimmerForm : Form
         }
 
         // Centre button: "add video" (browse) until a file is open, then play while paused
-        if (_info == null || !_playing)
+        if (_info == null || !_playing && !_cropping)
         {
             var cr = Rect(Hit.Center);
             using (var cp = new GraphicsPath()) { cp.AddEllipse(cr); Glass(g, cp, cr, _hover == Hit.Center ? 40 : 60); }
@@ -546,6 +563,7 @@ sealed class TrimmerForm : Form
         var pr = PanelRect;
         using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr, darken: 95); // darker than the other glass: text and trim frame stay legible over bright video
         DrawPanelContents(g, pr);
+        if (_cropping) DrawCropBar(g);
         if (_hintVisible && _hover != Hit.None && _drag == Drag.None) DrawHint(g, _hover);
     }
 
@@ -561,8 +579,8 @@ sealed class TrimmerForm : Form
         string sel = "";
         if (_info != null)
         {
-            var (dw, dh) = _info.DisplaySize(_rot);
-            sub = $"{dw}×{dh}  ·  {_info.Fps:0.##} fps  ·  {_info.VideoCodec}";
+            var (dw, dh) = HasCrop ? OutputSize() : _info.DisplaySize(_rot);
+            sub = $"{dw}×{dh}{(HasCrop ? " (cropped)" : "")}  ·  {_info.Fps:0.##} fps  ·  {_info.VideoCodec}";
             if (_info.IsHdr) sub += _info.IsHlg ? " HDR (HLG)" : " HDR10";
             else if (_info.BitDepth > 8) sub += $" {_info.BitDepth}-bit";
             sub += _info.HasAudio ? $"  ·  {_info.AudioCodec}" : "  ·  no sound";
@@ -581,7 +599,7 @@ sealed class TrimmerForm : Form
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
-        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut, Hit.RotL, Hit.RotR, Hit.Vol, Hit.Loop, Hit.Full, Hit.More })
+        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More })
         {
             var r = Rect(h);
             bool enabled = has || h is Hit.More or Hit.Full;
@@ -598,6 +616,7 @@ sealed class TrimmerForm : Form
                 case Hit.SetOut: BracketGlyph(g, gr, enabled && _hover == h ? C(255, TrimColor) : col, start: false); break;
                 case Hit.RotL: RotateGlyph(g, gr, col, clockwise: false); break;
                 case Hit.RotR: RotateGlyph(g, gr, col, clockwise: true); break;
+                case Hit.Crop: CropGlyph(g, gr, enabled && (HasCrop || _cropping) ? C(255, Theme.AccentHover) : col); break;
                 case Hit.Vol: SpeakerGlyph(g, gr, col, _muted || _volume == 0); break;
                 case Hit.Loop: LoopGlyph(g, gr, col); break;
                 case Hit.Full: FullGlyph(g, gr, col, _fullscreen); break;
@@ -786,6 +805,7 @@ sealed class TrimmerForm : Form
         Hit.SetOut => "End selection here  (O)",
         Hit.RotL => "Rotate left  (Shift+R)",
         Hit.RotR => "Rotate right  (R)",
+        Hit.Crop => _cropping ? "Finish cropping  (C or Enter)" : HasCrop ? "Change the crop  (C)" : "Crop  (C)",
         Hit.Vol => _muted ? "Unmute  (M)" : "Mute  (M)",
         Hit.VolSlider => "Volume  (↑ / ↓)",
         Hit.Loop => _loop ? "Loop selection: on" : "Loop selection: off",
@@ -882,7 +902,8 @@ sealed class TrimmerForm : Form
     {
         _blurDirty = false;
         if (_bmp == null) return;
-        int bw = 40, bh = Math.Max(2, (int)Math.Round(bw * _bmp.Height / (double)_bmp.Width));
+        var src = SourceRect;
+        int bw = 40, bh = Math.Max(2, (int)Math.Round(bw * src.Height / (double)src.Width));
         if (_blur == null || _blur.Width != bw || _blur.Height != bh)
         {
             _blur?.Dispose();
@@ -903,11 +924,11 @@ sealed class TrimmerForm : Form
                     int r = 0, g = 0, b = 0;
                     for (int j = 0; j < N; j++)
                     {
-                        int y = Math.Min(sh - 1, (int)((by + (j + 0.5) / N) * sh / bh));
+                        int y = src.Y + Math.Min(src.Height - 1, (int)((by + (j + 0.5) / N) * src.Height / bh));
                         uint* row = (uint*)((byte*)sd.Scan0 + (long)y * sd.Stride);
                         for (int i = 0; i < N; i++)
                         {
-                            uint p = row[Math.Min(sw - 1, (int)((bx + (i + 0.5) / N) * sw / bw))];
+                            uint p = row[src.X + Math.Min(src.Width - 1, (int)((bx + (i + 0.5) / N) * src.Width / bw))];
                             r += (int)(p >> 16) & 0xFF; g += (int)(p >> 8) & 0xFF; b += (int)p & 0xFF;
                         }
                     }
@@ -995,45 +1016,47 @@ sealed class TrimmerForm : Form
             _view = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppPArgb);
             _viewKey = default;
         }
-        var key = (_frameVersion, _zoom, _center, size);
+        var vr = VideoRectF;
+        var src = SourceRect;
+        var key = (_frameVersion, vr, src, size);
         if (key == _viewKey) return;
         _viewKey = key;
 
         int W = size.Width, H = size.Height, sw = _bmp.Width, sh = _bmp.Height;
-        var vr = VideoRectF;
-        float scale = vr.Width / sw;
+        float scale = vr.Width / src.Width;
         int mode = scale >= 2f ? 0 : scale >= 0.6f ? 1 : 2; // 0 nearest, 1 bilinear, 2 box
         int x0 = Math.Clamp((int)Math.Floor(vr.X), 0, W), x1 = Math.Clamp((int)Math.Ceiling(vr.Right), 0, W);
         int y0 = Math.Clamp((int)Math.Floor(vr.Y), 0, H), y1 = Math.Clamp((int)Math.Ceiling(vr.Bottom), 0, H);
 
-        // Per-column / per-row source lookup: index a, index b (next tap or box end), bilinear weight
-        static void Axis(float origin, float scale, int srcLen, int mode, int[] a, int[] b, int[] f, int from, int to)
+        // Per-column / per-row source lookup within [start, start + len): index a, index b (next tap or box end),
+        // bilinear weight
+        static void Axis(float origin, float scale, int start, int len, int mode, int[] a, int[] b, int[] f, int from, int to)
         {
             for (int i = from; i < to; i++)
             {
                 if (mode == 0)
                 {
-                    a[i] = Math.Clamp((int)((i + 0.5f - origin) / scale), 0, srcLen - 1);
+                    a[i] = start + Math.Clamp((int)((i + 0.5f - origin) / scale), 0, len - 1);
                 }
                 else if (mode == 1)
                 {
                     float s = (i + 0.5f - origin) / scale - 0.5f;
                     int k = (int)Math.Floor(s);
                     f[i] = (int)((s - k) * 256);
-                    a[i] = Math.Clamp(k, 0, srcLen - 1);
-                    b[i] = Math.Clamp(k + 1, 0, srcLen - 1);
+                    a[i] = start + Math.Clamp(k, 0, len - 1);
+                    b[i] = start + Math.Clamp(k + 1, 0, len - 1);
                 }
                 else
                 {
-                    int s0 = Math.Clamp((int)Math.Floor((i - origin) / scale), 0, srcLen - 1);
-                    int s1 = Math.Clamp((int)Math.Ceiling((i + 1 - origin) / scale), s0 + 1, srcLen);
-                    a[i] = s0; b[i] = s1;
+                    int s0 = Math.Clamp((int)Math.Floor((i - origin) / scale), 0, len - 1);
+                    int s1 = Math.Clamp((int)Math.Ceiling((i + 1 - origin) / scale), s0 + 1, len);
+                    a[i] = start + s0; b[i] = start + s1;
                 }
             }
         }
         int[] ca = new int[W], cb = new int[W], cf = new int[W], ra = new int[H], rb = new int[H], rf = new int[H];
-        Axis(vr.X, scale, sw, mode, ca, cb, cf, x0, x1);
-        Axis(vr.Y, scale, sh, mode, ra, rb, rf, y0, y1);
+        Axis(vr.X, scale, src.X, src.Width, mode, ca, cb, cf, x0, x1);
+        Axis(vr.Y, scale, src.Y, src.Height, mode, ra, rb, rf, y0, y1);
 
         BitmapData? vd = null, sd = null;
         _busy++;
@@ -1332,6 +1355,7 @@ sealed class TrimmerForm : Form
         bool moved = screen != _lastMousePos;
         _lastMousePos = screen;
 
+        if (_drag == Drag.Crop) { Activity(); DragCrop(e.Location); return; }
         if (_drag != Drag.None) { Activity(); DragTo(e.X); return; }
 
         if (_dragArmed)
@@ -1355,6 +1379,8 @@ sealed class TrimmerForm : Form
 
         if (moved) Activity();
         var h = HitTest(e.Location);
+        int item = h == Hit.CropBar ? CropItemAt(e.Location) : int.MinValue;
+        if (item != _hoverItem) { _hoverItem = item; Invalidate(CropBarRect); }
         if (h != _hover)
         {
             if (_hintVisible) Invalidate(); else { InvalidateHit(_hover); InvalidateHit(h); }
@@ -1363,6 +1389,7 @@ sealed class TrimmerForm : Form
             _hintVisible = false;
         }
         Cursor = h is Hit.TrimIn or Hit.TrimOut ? Cursors.SizeWE : h == Hit.TrimMove ? Cursors.SizeAll
+            : h == Hit.CropArea ? CropCursor(CropPartAt(e.Location)) : h == Hit.CropBar && item == int.MinValue ? Cursors.Default
             : h != Hit.None ? Cursors.Hand : _zoom > 1f ? Cursors.SizeAll : Cursors.Default;
     }
 
@@ -1379,6 +1406,13 @@ sealed class TrimmerForm : Form
         var h = HitTest(e.Location);
         if (h != Hit.None) Activity();
         _hintVisible = false;
+        if (h == Hit.CropArea)
+        {
+            if (e.Clicks == 2 && CropPartAt(e.Location) == CropPart.Move) { FinishCrop(apply: true); return; } // double-click = done
+            BeginCropDrag(e.Location);
+            return;
+        }
+        if (h == Hit.CropBar) _pressedItem = CropItemAt(e.Location);
         if (_info != null && h is Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove or Hit.VolSlider)
         {
             if (h != Hit.VolSlider) Pause();
@@ -1399,7 +1433,7 @@ sealed class TrimmerForm : Form
         }
         _pressed = h;
         if (h == Hit.Export) InvalidateHit(h);
-        if (h == Hit.None)
+        if (h == Hit.None && !_cropping)
         {
             if (e.Clicks == 2)
             {
@@ -1458,6 +1492,7 @@ sealed class TrimmerForm : Form
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (_drag == Drag.Crop) { EndCropDrag(); return; }
         if (_drag != Drag.None)
         {
             var d = _drag;
@@ -1493,7 +1528,17 @@ sealed class TrimmerForm : Form
         if (h != pressed) return;
         switch (h)
         {
-            case Hit.None: if (_info != null) TogglePlay(); break;
+            case Hit.None: if (_info != null && !_cropping) TogglePlay(); break;
+            case Hit.CropBar:
+            {
+                int item = CropItemAt(e.Location);
+                if (item != _pressedItem) break;
+                if (item == DoneItem) FinishCrop(apply: true);
+                else if (item == ResetItem) ResetCrop();
+                else if (item >= 0) ApplyAspect(item);
+                break;
+            }
+            case Hit.Crop: ToggleCrop(); break;
             case Hit.Center: if (_info == null) OpenDialog(); else TogglePlay(); break;
             case Hit.Play: TogglePlay(); break;
             case Hit.Prev: Step(-1); break;
@@ -1539,6 +1584,8 @@ sealed class TrimmerForm : Form
         {
             Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove => PanelRect,
             Hit.Min or Hit.Max or Hit.Close => WindowButtonsRect,
+            Hit.CropBar => CropBarRect,
+            Hit.CropArea => ClientRectangle,
             _ => Rect(h),
         };
         r.Inflate(P(4), P(4));
@@ -1564,6 +1611,9 @@ sealed class TrimmerForm : Form
         Activity();
         switch (keyData)
         {
+            case Keys.C: ToggleCrop(); return true;
+            case Keys.Enter when _cropping: FinishCrop(apply: true); return true;
+            case Keys.Escape when _cropping: FinishCrop(apply: false); return true;
             case Keys.Space: TogglePlay(); return true;
             case Keys.Left: Step(-1); return true;
             case Keys.Right: Step(+1); return true;
@@ -1614,6 +1664,8 @@ sealed class TrimmerForm : Form
         _menu.Items.Add(Item("Rotate right", () => Rotate(+90), "R", has));
         _menu.Items.Add(Item("Rotate left", () => Rotate(-90), "Shift+R", has));
         _menu.Items.Add(Item("Reset rotation", () => Rotate(-_rot), null, has && _rot != 0));
+        _menu.Items.Add(Item(_cropping ? "Finish cropping" : "Crop…", ToggleCrop, "C", has));
+        _menu.Items.Add(Item("Remove crop", () => { ResetCrop(); FinishCrop(apply: true); }, null, has && HasCrop));
         _menu.Items.Add(Item("Select the whole video", ResetSelection, null, has && (_in > 0 || _out < Duration)));
         _menu.Items.Add(Item((_loop ? "✓  " : "     ") + "Loop selection", () => _loop = !_loop, null, has));
         _menu.Items.Add(Item("Reset zoom", ResetZoom, "Ctrl+0", _zoom > 1f));
@@ -1683,6 +1735,9 @@ sealed class TrimmerForm : Form
         _out = Duration;
         _pos = 0;
         _rot = 0;
+        _crop = _cropBefore = FullFrame;
+        _cropping = false;
+        _aspect = 0;
         _strip = new ThumbnailStrip(_info, this, P(46) * 2);
         _strip.Updated += () => { _stripVersion++; if (_ui > 0) Invalidate(PanelRect); };
         Text = $"{Path.GetFileName(path)} — Video Trimmer";
@@ -1741,6 +1796,7 @@ sealed class TrimmerForm : Form
     {
         if (_info == null) return;
         _rot = ((_rot + degrees) % 360 + 360) % 360;
+        RotateCrop(degrees);
         _zoom = 1f;
         _center = new PointF(0.5f, 0.5f);
         RenderFrame();
@@ -1774,7 +1830,8 @@ sealed class TrimmerForm : Form
     {
         if (_info == null || _pb == null) return;
         if (_playing) Pause();
-        var job = new TrimJob(_info, _in, _out, _rot);
+        FinishCrop(apply: true);
+        var job = new TrimJob(_info, _in, _out, _rot) { Crop = HasCrop ? _crop : null };
         RevealCursor();
         using var dlg = new ExportDialog(job);
         dlg.ShowDialog(this);
@@ -1928,9 +1985,9 @@ sealed class TrimmerForm : Form
         var mouse = PointToClient(MousePosition);
         // Over this window itself, not over a dialog, menu or other window that happens to sit on top of it.
         bool mouseInside = ClientRectangle.Contains(mouse) && WindowFromPoint(MousePosition) == Handle;
-        if (_info != null && !mouseInside && _drag == Drag.None && !_menu.Visible) HideOverlayNow();
+        if (_info != null && !mouseInside && _drag == Drag.None && !_menu.Visible && !_cropping) HideOverlayNow();
         bool restingOnUi = _ui > 0f && !_panning && (PanelRect.Contains(mouse) || WindowButtonsRect.Contains(mouse));
-        bool show = _info == null || _drag != Drag.None || _menu.Visible || restingOnUi || Now - _lastActivity < HideAfterSeconds;
+        bool show = _info == null || _cropping || _drag != Drag.None || _menu.Visible || restingOnUi || Now - _lastActivity < HideAfterSeconds;
         float target = show ? 1f : 0f;
         if (_ui != target)
         {
