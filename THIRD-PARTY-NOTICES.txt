@@ -4,18 +4,23 @@ Splicia (c) 2026 Vesperis Labs, https://www.vesperislabs.com, is licensed under 
 (see LICENSE.txt). It includes or uses the following software, each under its own license.
 
 =======================================================================
-FFmpeg 8.1
+FFmpeg 8.1.3
 =======================================================================
 
 The ffmpeg folder holds FFmpeg's libraries (avcodec, avformat, avutil, avfilter, avdevice,
-swscale, swresample) and ffmpeg.exe, from the "gpl-shared" Windows build of FFmpeg 8.1 by
-BtbN/FFmpeg-Builds. That build includes GPL components (such as x264 and x265), so it is
-licensed under the GNU General Public License version 3; the full text is in
-ffmpeg\LICENSE.txt. FFmpeg is a trademark of Fabrice Bellard.
+swscale, swresample) and ffmpeg.exe, unmodified, from the "gpl-shared" Windows build of
+FFmpeg n8.1.3-18-g46d899d7a0 by BtbN/FFmpeg-Builds (autobuild-2026-10-15-13-03). That build
+includes GPL components (such as x264 and x265), so it is licensed under the GNU General
+Public License version 3; the full text is in ffmpeg\LICENSE.txt. FFmpeg is a trademark of
+Fabrice Bellard.
 
-Splicia runs these files unmodified. Their source code is available from:
-  FFmpeg:         https://ffmpeg.org/download.html  (git: https://github.com/FFmpeg/FFmpeg, release/8.1)
-  Build scripts:  https://github.com/BtbN/FFmpeg-Builds  (lists every library in the build and its source)
+The corresponding source code is attached to every Splicia release on GitHub
+(https://github.com/fender90/Splicia/releases), next to the installer:
+  ffmpeg-n8.1.3-18-g46d899d7a0-source.tar.gz  FFmpeg at commit 46d899d7a02bc63237472cc4897258d5ddf274ac
+  FFmpeg-Builds-63ac326-build-scripts.tar.gz  BtbN's build scripts at commit 63ac3265b0789ea16c7b1f8351cd2ad195a28722,
+                                              which name every bundled library and the exact source revision used
+The same sources are at https://github.com/FFmpeg/FFmpeg/tree/46d899d7a02bc63237472cc4897258d5ddf274ac
+and https://github.com/BtbN/FFmpeg-Builds/tree/63ac3265b0789ea16c7b1f8351cd2ad195a28722.
 
 =======================================================================
 FFmpeg.AutoGen 8.1.0

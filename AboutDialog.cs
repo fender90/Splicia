@@ -35,7 +35,7 @@ sealed class AboutDialog : PagedWindow
 
         AddText("LICENSE", Section, Theme.Faint, 24);
         AddText($"{AppInfo.Name} {AppInfo.Copyright} is licensed under {AppInfo.License} ({AppInfo.LicenseName}): " +
-                $"free to use, share and adapt, with credit to {AppInfo.Publisher}.", Body, Theme.Fg, 6);
+                $"free to use, share and adapt, with credit to {AppInfo.Publisher}. The {AppInfo.Name} name and logo are not covered.", Body, Theme.Fg, 6);
         AddLink("creativecommons.org/licenses/by/4.0", AppInfo.LicenseUrl, 2);
         AddText("It uses FFmpeg, which is licensed under the GNU GPL version 3; see the third-party notices.", Small, Theme.Faint, 12);
 

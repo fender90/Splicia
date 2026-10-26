@@ -8,9 +8,17 @@ You may share and adapt Splicia for any purpose, including commercially, as
 long as you give appropriate credit to Vesperis Labs, link to the license and
 indicate if changes were made.
 
-The FFmpeg components shipped with Splicia (the ffmpeg folder) are separate
-programs under their own license, the GNU General Public License version 3.
-See THIRD-PARTY-NOTICES.txt.
+The Splicia and Vesperis Labs names and logos, including the app icon and
+the artwork it is made from (app.ico, hero.jpg, art/ and tools/icon-1024.png),
+are not covered by CC BY 4.0: all rights to them are reserved by Vesperis
+Labs. If you share an adapted version, give it a name and icon of its own.
+
+The FFmpeg components shipped with Splicia (the ffmpeg folder) are licensed
+under the GNU General Public License version 3. Because Splicia loads FFmpeg's
+libraries, Splicia as distributed together with them is also covered, as a
+whole, by the GNU GPL version 3; Splicia's own source code remains available
+under CC BY 4.0, which permits this. FFmpeg's source code is attached to every
+Splicia release. See THIRD-PARTY-NOTICES.txt.
 
 The full legal code of CC BY 4.0 follows.
 
