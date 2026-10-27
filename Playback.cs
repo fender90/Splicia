@@ -1,23 +1,34 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace Splicia;
 
 /// <summary>
-/// Owns a <see cref="MediaSource"/> on a worker thread. Paused, it decodes single frames on request (seek, scrub,
-/// frame step). Playing, it streams frames into a short queue and sound into <see cref="AudioOut"/>; the UI asks for the
-/// frame due at <see cref="Clock"/>, which follows the sound card while sound is playing and a stopwatch otherwise.
+/// Plays the timeline. Paused, its worker thread decodes single frames on request (seek, scrub, frame step), or makes a
+/// black one for a gap. Playing, it plays an <see cref="EditList"/>, the way editors play a timeline: pictures come from
+/// two decoder lanes, A and B (<see cref="Lane"/>), the next clip already decoding while the current one shows, and the
+/// worker makes the timeline's frames from them (straight cuts; crossfades blended from both sides; fades; black in gaps)
+/// into a short queue. The sound is mixed into one continuous stream by <see cref="EditAudio"/>. The UI asks for the
+/// frame due at <see cref="Clock"/>, timeline time, which follows the sound card while sound is playing and a stopwatch
+/// otherwise. Nothing stops or seeks at a cut, so there is no gap but the ones on the timeline.
 /// </summary>
 sealed class Playback : IDisposable
 {
-    enum Kind { At, After, Keyframe, Play }
-    readonly record struct Request(Kind Kind, double Time);
+    enum Kind { At, After, Keyframe, Black, Play }
+
+    /// <summary>A request: <paramref name="Time"/> in the file (unused for black / play), <paramref name="Out"/> on the timeline.</summary>
+    readonly record struct Request(Kind Kind, double Time, double Out);
 
     const int MaxQueue = 12;
 
     public readonly MediaInfo Info;
-    readonly MediaSource _src;
+    readonly string _path;
+    readonly MediaSource _src;            // still frames, and lane A's decoder
+    MediaSource? _src2;                   // lane B's decoder (opened when the timeline needs it)
     readonly (int W, int H) _size;
     readonly AudioOut? _audio;
+    EditAudio? _sound;                    // opened with the first play
+    readonly Lane?[] _lanes = new Lane?[2];
     readonly Thread _thread;
     readonly object _gate = new();
     readonly AutoResetEvent _wake = new(false);
@@ -28,32 +39,49 @@ sealed class Playback : IDisposable
     bool _quit;
     VideoFrame? _still;
     volatile bool _playing;
-    bool _streaming, _streamEnded, _clockRunning;
-    int _generation; // bumps on every play/pause so stale stream output is discarded
+    bool _streamEnded, _clockRunning;
+    double _endAt;        // timeline time the played edit ends at (the last frame's end)
+    int _generation;      // bumps on every play/pause so stale output is discarded
+
+    // Set by Play under _gate; the worker takes its own copy when it starts
+    EditList _edit = EditList.Empty;
+    bool _loop;
+
+    // Mixing state (worker thread only)
+    EditList _ed = EditList.Empty;
+    bool _mixing;
+    int _mixGen;
+    long _g;              // global index of the part being shown: cycle _g / n, part _g % n
+    long _armed = -1;     // the part the other lane is decoding
+    double _cursor;       // timeline time of the next frame to make (black frames fill gaps on this grid)
+    double _roundEnd;     // where this round of the timeline ends (looping: the next round starts there)
+    VideoFrame? _heldB;   // during a crossfade, the incoming side's frame for the current moment
 
     // Clock state (guarded by _gate)
-    double _base;                      // media time the current run started at
+    double _base;                      // timeline time the current run started at
     readonly Stopwatch _sw = new();    // video-only clock, and extrapolation when the sound runs dry
     double _anchor;                    // last clock value read from the sound card
     readonly Stopwatch _anchorAge = new();
-    double _audioCursor;               // media time the next written sample will play at
 
     public Playback(string path)
     {
+        _path = path;
         _src = new MediaSource(path);
         Info = _src.Info;
         // Decode at most ~1920 on the long side: plenty for the preview, and 4K stays smooth.
         _size = _src.ScaledSize(1920);
-        if (Info.HasAudio)
-        {
-            try { _audio = new AudioOut(); }
-            catch (Exception ex) { CrashLog.Write(ex, "Opening audio output (continuing without sound)"); }
-        }
+        // Always (the audio track can bring sound to a silent video); the clock follows it.
+        try { _audio = new AudioOut(); }
+        catch (Exception ex) { CrashLog.Write(ex, "Opening audio output (continuing without sound)"); }
+        _lanes[0] = new Lane(_src, _size, Rent, Recycle, "Lane A");
         _thread = new Thread(Run) { IsBackground = true, Name = "Playback" };
         _thread.Start();
     }
 
     public bool HasSound => _audio != null;
+
+    /// <summary>The sound output (tests tap it).</summary>
+    internal AudioOut? Output => _audio;
 
     public float Volume
     {
@@ -63,32 +91,50 @@ sealed class Playback : IDisposable
 
     public bool IsPlaying => _playing;
 
+    /// <summary>Whether the timeline starts over when it ends (seamlessly, like any other join).</summary>
+    public bool Loop
+    {
+        set
+        {
+            lock (_gate) _loop = value;
+            _wake.Set();
+        }
+    }
+
+    bool Looping { get { lock (_gate) return _loop; } }
+
     // ───────────────────────── UI side ─────────────────────────
 
-    /// <summary>Shows the frame on screen at <paramref name="time"/> (paused). Result: <see cref="TakeStill"/>.</summary>
-    public void ShowAt(double time) => Post(new Request(Kind.At, time));
+    /// <summary>
+    /// Shows the file's frame on screen at <paramref name="time"/> (paused); the frame's <see cref="VideoFrame.Out"/> is
+    /// its time plus <paramref name="toTimeline"/>. Result: <see cref="TakeStill"/>.
+    /// </summary>
+    public void ShowAt(double time, double toTimeline) => Post(new Request(Kind.At, time, time + toTimeline));
 
     /// <summary>Fast approximate preview while scrubbing: the keyframe before <paramref name="time"/>, unless the exact frame is cheap.</summary>
-    public void ShowNear(double time) => Post(new Request(Kind.Keyframe, time));
+    public void ShowNear(double time, double toTimeline) => Post(new Request(Kind.Keyframe, time, time + toTimeline));
 
-    /// <summary>Shows the first frame after the one starting at <paramref name="time"/> (paused).</summary>
-    public void ShowNext(double time) => Post(new Request(Kind.After, time));
+    /// <summary>A black frame for timeline time <paramref name="at"/> (a gap, paused).</summary>
+    public void ShowBlack(double at) => Post(new Request(Kind.Black, double.NaN, at));
 
-    public void Play(double from)
+    /// <summary>Plays <paramref name="edit"/> from timeline time <paramref name="at"/>.</summary>
+    public void Play(double at, EditList edit, bool loop)
     {
         lock (_gate)
         {
+            _edit = edit;
+            _loop = loop;
             _playing = true;
             _clockRunning = false;
-            _base = from;
+            _base = at;
             _generation++;
             _streamEnded = false;
             while (_queue.Count > 0) _pool.Push(_queue.Dequeue());
         }
-        Post(new Request(Kind.Play, from));
+        Post(new Request(Kind.Play, double.NaN, at));
     }
 
-    /// <summary>Stops at the current clock position, which is returned.</summary>
+    /// <summary>Stops at the current clock position (timeline time), which is returned.</summary>
     public double Pause()
     {
         lock (_gate)
@@ -112,26 +158,28 @@ sealed class Playback : IDisposable
         {
             if (r.Kind != Kind.Play && _playing)
             {
-                // A seek while playing restarts playback there.
-                r = new Request(Kind.Play, r.Time);
-                _base = r.Time;
+                // A seek while playing restarts playing there.
+                r = new Request(Kind.Play, double.NaN, r.Out);
+                _base = r.Out;
                 _clockRunning = false;
                 _generation++;
+                _streamEnded = false;
+                while (_queue.Count > 0) _pool.Push(_queue.Dequeue());
             }
             _request = r;
         }
         _wake.Set();
     }
 
-    /// <summary>The playback position in seconds.</summary>
+    /// <summary>The playback position, timeline time.</summary>
     public double Clock { get { lock (_gate) return ClockLocked(); } }
 
     double ClockLocked()
     {
         if (!_playing || !_clockRunning) return _base;
         if (_audio == null) return _base + _sw.Elapsed.TotalSeconds;
-        // Follow the sound card while it has sound queued; when it runs dry (sound track ended, or a gap), carry on
-        // from its last position with the stopwatch.
+        // Follow the sound card while it has sound queued; when it runs dry (an underrun), carry on from its last
+        // position with the stopwatch.
         if (_audio.PendingFrames > 0)
         {
             _anchor = _base + _audio.PlayedFrames / (double)MediaSource.AudioRate;
@@ -147,7 +195,7 @@ sealed class Playback : IDisposable
         lock (_gate)
         {
             VideoFrame? due = null;
-            while (_queue.Count > 0 && _queue.Peek().Time <= clock + 0.002)
+            while (_queue.Count > 0 && _queue.Peek().Out <= clock + 0.002)
             {
                 if (due != null) _pool.Push(due);
                 due = _queue.Dequeue();
@@ -157,8 +205,11 @@ sealed class Playback : IDisposable
         }
     }
 
-    /// <summary>True once playback has shown everything to the end of the file.</summary>
-    public bool Ended { get { lock (_gate) return _playing && _streamEnded && _queue.Count == 0; } }
+    /// <summary>True once the timeline has played to its end, last frame included (never while looping).</summary>
+    public bool Ended
+    {
+        get { lock (_gate) return _playing && _streamEnded && _queue.Count == 0 && ClockLocked() >= _endAt - 0.002; }
+    }
 
     /// <summary>The frame decoded for the last paused request, if a new one is ready.</summary>
     public VideoFrame? TakeStill()
@@ -187,53 +238,73 @@ sealed class Playback : IDisposable
 
     void Run()
     {
-        try
+        while (true)
         {
-            while (true)
+            Request? req;
+            int gen;
+            bool playing;
+            lock (_gate)
             {
-                Request? req;
-                lock (_gate)
-                {
-                    if (_quit) return;
-                    req = _request;
-                    _request = null;
-                }
+                if (_quit) return;
+                req = _request;
+                _request = null;
+                gen = _generation;
+                playing = _playing;
+            }
+            try
+            {
                 if (req is Request r)
                 {
-                    if (r.Kind == Kind.Play) StartStream(r.Time);
-                    else DecodeStill(r);
+                    if (r.Kind == Kind.Play) StartEdit(r.Out, gen);
+                    else if (StopMixing()) Still(r);
                     continue;
                 }
-                if (_streaming && _playing && !_streamEnded && NeedMore()) StreamOne();
-                else _wake.WaitOne(_streaming && _playing ? 5 : 200);
+                if (!playing || gen != _mixGen)
+                {
+                    if (_mixing) StopMixing();
+                    _wake.WaitOne(playing ? 5 : 200);
+                    continue;
+                }
+                bool progressed = _mixing && MixOne();
+                MaybeStartClock();
+                if (!progressed) _wake.WaitOne(3);
             }
-        }
-        catch (Exception ex)
-        {
-            CrashLog.Write(ex, "Playback worker");
-            lock (_gate) { _streamEnded = true; }
+            catch (Exception ex)
+            {
+                // One bad step mustn't end the worker: stop this run (the UI sees it end) and carry on.
+                CrashLog.Write(ex, "Playback worker");
+                try { StopMixing(); } catch { }
+                lock (_gate) { if (_generation == gen) { _streamEnded = true; _endAt = _base; } }
+            }
         }
     }
 
-    void DecodeStill(Request r)
+    void Still(Request r)
     {
-        _streaming = false;
-        _audio?.Reset();
-        _src.AudioEnabled = false;
         var f = Rent();
         bool ok;
-        try
+        if (r.Kind == Kind.Black)
         {
-            ok = r.Kind == Kind.Keyframe
-                ? _src.DecodeKeyframeNear(r.Time, f, _size.W, _size.H)
-                : _src.DecodeVideoAt(r.Time, r.Kind == Kind.After, f, _size.W, _size.H);
+            Fill(f, 0xFF000000);
+            f.Time = double.NaN;
+            ok = true;
         }
-        catch (Exception ex)
+        else
         {
-            CrashLog.Write(ex, $"Decoding frame at {r.Time:0.###} s");
-            ok = false;
+            try
+            {
+                ok = r.Kind == Kind.Keyframe
+                    ? _src.DecodeKeyframeNear(r.Time, f, _size.W, _size.H)
+                    : _src.DecodeVideoAt(r.Time, r.Kind == Kind.After, f, _size.W, _size.H);
+            }
+            catch (Exception ex)
+            {
+                CrashLog.Write(ex, $"Decoding frame at {r.Time:0.###} s");
+                ok = false;
+            }
         }
-        f.Exact = r.Kind != Kind.Keyframe || Math.Abs(f.Time - r.Time) < Info.FrameDuration;
+        f.Exact = r.Kind is Kind.Black or Kind.At or Kind.After || Math.Abs(f.Time - r.Time) < Info.FrameDuration;
+        f.Out = r.Kind == Kind.Black ? r.Out : f.Time + (r.Out - r.Time);
         lock (_gate)
         {
             if (!ok) { _pool.Push(f); return; }
@@ -242,127 +313,226 @@ sealed class Playback : IDisposable
         }
     }
 
-    int _streamGen;
-    double _streamFrom, _backoff;
-    bool _firstVideo;
+    void Fill(VideoFrame f, uint bgra)
+    {
+        f.EnsureSize(_size.W, _size.H);
+        MemoryMarshal.Cast<byte, uint>(f.Data.AsSpan(0, _size.W * _size.H * 4)).Fill(bgra);
+    }
 
-    void StartStream(double from)
+    Lane LaneFor(long g) => _lanes[g % 2]!;
+
+    EditList.Part PartOf(long g) => _ed.Parts[(int)(g % _ed.Parts.Count)];
+
+    /// <summary>Timeline time of part <paramref name="g"/>'s start (its cut, before any handle), in its round of a loop.</summary>
+    double BaseOf(long g) => g / _ed.Parts.Count * _ed.Length + PartOf(g).Start;
+
+
+
+    /// <summary>Starts playing at timeline time <paramref name="at"/>: the part there on one lane, the next on the other.</summary>
+    void StartEdit(double at, int gen)
+    {
+        StopMixing();
+        lock (_gate)
+        {
+            if (gen != _generation) return;
+            _ed = _edit;
+        }
+        _mixGen = gen;
+        if (at >= _ed.Length - Info.FrameDuration / 2 && Looping) at = 0;
+        bool over = at >= _ed.Length - Info.FrameDuration / 2;
+        lock (_gate)
+        {
+            if (gen != _generation) return;
+            _streamEnded = over;
+            _endAt = at;
+            _base = at;
+        }
+        if (over) return;
+        int first = _ed.Locate(at); // the number of parts when only black (and the audio track) is left
+
+        _g = first;
+        _armed = -1;
+        _cursor = at;
+        _roundEnd = _ed.Length;
+        if (first < _ed.Parts.Count)
+        {
+            StartPart(_g, at);
+            ArmNext(at);
+        }
+        else if (_ed.Parts.Count > 0 && Looping) { StartPart(_g, at); _armed = _g; }
+        if (_audio != null)
+        {
+            _audio.Reset();
+            Sound().Start(_ed, first, at);
+        }
+        _mixing = true;
+    }
+
+    /// <summary>Starts part <paramref name="g"/> on its lane, from timeline time <paramref name="at"/> if that's inside it.</summary>
+    void StartPart(long g, double at)
+    {
+        if (g % 2 == 1) EnsureLaneB();
+        var p = PartOf(g);
+        double playStart = BaseOf(g) - p.HandleIn;
+        LaneFor(g).Start(p.From - p.HandleIn + Math.Max(0, at - playStart), p.To + p.HandleOut);
+    }
+
+    /// <summary>Has the other lane start decoding the part after the current one, so it's ready when it's due.</summary>
+    void ArmNext(double at)
+    {
+        long next = _g + 1;
+        if (next % _ed.Parts.Count == 0 && !Looping) return;
+        StartPart(next, at);
+        _armed = next;
+    }
+
+    /// <summary>A black frame at the cursor (a gap, or past the last video clip), moving the cursor on a frame.</summary>
+    bool Black()
+    {
+        var black = Rent();
+        Fill(black, 0xFF000000);
+        black.Time = double.NaN;
+        black.Out = _cursor;
+        black.Exact = true;
+        _cursor += Info.FrameDuration;
+        return Queue(black);
+    }
+
+    /// <summary>The timeline (this round of it) is over: stop making frames, or carry on into the next round.</summary>
+    bool End()
     {
         lock (_gate)
         {
-            _streamGen = _generation;
-            while (_queue.Count > 0) _pool.Push(_queue.Dequeue());
-            _streamEnded = false;
+            if (_generation == _mixGen) { _streamEnded = true; _endAt = _cursor; }
         }
+        _mixing = false;
+        return false;
+    }
+
+    void EnsureLaneB()
+    {
+        if (_lanes[1] != null) return;
+        _src2 = new MediaSource(_path);
+        _lanes[1] = new Lane(_src2, _size, Rent, Recycle, "Lane B");
+    }
+
+    EditAudio Sound()
+    {
+        if (_sound == null)
+        {
+            var sound = new EditAudio(_path, _audio!, () => Looping); // opens decoders: not under the lock
+            lock (_gate) _sound = sound;
+        }
+        return _sound;
+    }
+
+    /// <summary>Stops the lanes and the sound; false if a decoder didn't let go (then it mustn't be used for a still).</summary>
+    bool StopMixing()
+    {
+        bool idle = true;
+        foreach (var lane in _lanes) if (lane != null && !lane.Stop()) idle = false;
+        _sound?.Stop();
         _audio?.Reset();
-        _src.AudioEnabled = _audio != null;
-        _src.Seek(from);
-        _streamFrom = from;
-        _audioCursor = from;
-        _firstVideo = true;
-        _backoff = 0;
-        _streaming = true;
+        if (_heldB != null) { Recycle(_heldB); _heldB = null; }
+        _mixing = false;
+        return idle;
     }
 
-    bool NeedMore()
+    /// <summary>
+    /// Makes the timeline's next frame, if its picture is ready: black in a gap; else the current part's frame, blended
+    /// with the incoming part's frame for the same moment during a crossfade (b × x + a × (1 − x), x running 0 → 1 over
+    /// the crossfade, as ffmpeg's xfade), darkened during a fade (linear, as ffmpeg's fade). When a part is used up, the
+    /// next one (already decoding on the other lane) takes over and the freed lane starts on the one after. Returns false
+    /// when nothing could be done yet.
+    /// </summary>
+    bool MixOne()
+    {
+        lock (_gate) if (_queue.Count >= MaxQueue) return false;
+        int n = _ed.Parts.Count;
+        double fd = Info.FrameDuration;
+        // The end of this round of the timeline: stop there, or carry on into the next round when looping.
+        if (_cursor >= _roundEnd - fd * 0.5)
+        {
+            if (!Looping) return End();
+            _roundEnd += _ed.Length;
+        }
+        if (n == 0) return Black(); // only the audio track: black throughout
+
+        var p = PartOf(_g);
+        double pb = BaseOf(_g);
+        if (_cursor < pb - p.HandleIn - fd * 0.5) return Black(); // a gap, the start, or the end after the last clip
+
+        var lane = LaneFor(_g);
+        if (_armed != _g && _g % n == 0 && _g > 0 && lane.Peek() == null && !lane.Ready)
+        {
+            StartPart(_g, _cursor); // looping was switched on late
+            _armed = _g;
+        }
+        var a = lane.Peek();
+        if (a == null)
+        {
+            if (!lane.Done) return false;
+            // This part is over: the next one (already decoding) takes over; this lane moves on to the one after.
+            if (_heldB != null) { Recycle(_heldB); _heldB = null; }
+            _cursor = Math.Max(_cursor, pb + p.Length + p.HandleOut);
+            _g++;
+            if (_g % n != 0 || Looping)
+            {
+                if (_armed != _g) { StartPart(_g, _cursor); _armed = _g; }
+                ArmNext(_cursor);
+            }
+            return true;
+        }
+
+        double t = pb + (a.Time - p.From);
+        if (p.HandleOut > 0 && t >= pb + p.Length - p.HandleOut - fd * 0.25)
+        {
+            var laneB = LaneFor(_g + 1);
+            var q = PartOf(_g + 1);
+            double qb = BaseOf(_g + 1), cross = pb + p.Length - p.HandleOut;
+            while (laneB.Peek() is VideoFrame b && qb + (b.Time - q.From) <= t + fd * 0.5)
+            {
+                laneB.Take();
+                if (_heldB != null) Recycle(_heldB);
+                _heldB = b;
+            }
+            // Wait for the incoming side if its frame for this moment isn't decoded yet.
+            bool stale = _heldB == null || qb + (_heldB.Time - q.From) < t - fd * 0.5;
+            if (stale && laneB.Peek() == null && !laneB.Done) return false;
+            if (_heldB != null) Blend(a, _heldB, (t - cross) / (2 * p.HandleOut));
+        }
+        double u = t - pb, left = p.Length - u, bright = 1;
+        if (p.FadeIn > 0 && u < p.FadeIn) bright *= Math.Max(0, u) / p.FadeIn;
+        if (p.FadeOut > 0 && left < p.FadeOut) bright *= Math.Max(0, left) / p.FadeOut;
+        if (bright < 0.999) Darken(a, bright);
+
+        lane.Take();
+        a.Out = t;
+        _cursor = t + fd;
+        return Queue(a);
+    }
+
+    bool Queue(VideoFrame f)
     {
         lock (_gate)
         {
-            if (_queue.Count >= MaxQueue) return false;
-            if (_queue.Count < 6) return true;
+            if (_generation == _mixGen) { _queue.Enqueue(f); return true; }
         }
-        return _audio != null && _audio.PendingFrames < MediaSource.AudioRate / 2;
-    }
-
-    void StreamOne()
-    {
-        var got = _src.Next();
-        int gen;
-        lock (_gate) gen = _generation;
-        if (gen != _streamGen) return; // paused or restarted meanwhile; the next request resets things
-
-        switch (got)
-        {
-            case MediaSource.Got.Video:
-            {
-                double t = _src.VideoTime;
-                if (_firstVideo)
-                {
-                    _firstVideo = false;
-                    // The seek landed on the keyframe after the start (B-frames: its decode time is earlier than its
-                    // display time). Go further back so playback starts on the right frame.
-                    if (t > _streamFrom + Info.FrameDuration * 0.5 && _streamFrom - _backoff > 0.001 && _backoff < 30)
-                    {
-                        _backoff = _backoff == 0 ? 1 : _backoff * 3;
-                        _src.Seek(Math.Max(0, _streamFrom - _backoff));
-                        _audio?.Reset();
-                        _audioCursor = _streamFrom;
-                        _firstVideo = true;
-                        return;
-                    }
-                }
-                if (t < _streamFrom - 1e-4) return; // before the start point (decoding up from the keyframe)
-                var f = Rent();
-                _src.ConvertVideo(f, _size.W, _size.H);
-                f.Exact = true;
-                lock (_gate)
-                {
-                    if (_generation != _streamGen) { _pool.Push(f); return; }
-                    _queue.Enqueue(f);
-                }
-                break;
-            }
-            case MediaSource.Got.Audio:
-                WriteAudio();
-                break;
-            case MediaSource.Got.End:
-                lock (_gate) _streamEnded = true;
-                break;
-        }
-        MaybeStartClock();
-    }
-
-    void WriteAudio()
-    {
-        if (_audio == null) return;
-        double at = _src.AudioTime;
-        var pcm = _src.ConvertAudio();
-        if (pcm.IsEmpty) return;
-        const int Rate = MediaSource.AudioRate;
-        if (!double.IsNaN(at))
-        {
-            double end = at + pcm.Length / 4 / (double)Rate;
-            if (end <= _audioCursor + 0.0005) return; // entirely before the start point / already covered
-            if (at < _audioCursor - 0.0005)
-            {
-                int skip = (int)Math.Round((_audioCursor - at) * Rate) * 4;
-                pcm = skip < pcm.Length ? pcm[skip..] : ReadOnlySpan<byte>.Empty;
-            }
-            else if (at > _audioCursor + 0.02 && at - _audioCursor < 10)
-            {
-                // Gap (the sound starts later than the picture, or a hole in the track): fill with silence so the
-                // sound stays lined up with its timestamps.
-                int frames = (int)Math.Round((at - _audioCursor) * Rate);
-                _audio.WriteSilence(frames);
-                _audioCursor += frames / (double)Rate;
-            }
-        }
-        _audio.Write(pcm);
-        _audioCursor += pcm.Length / 4 / (double)Rate;
+        Recycle(f);
+        return false;
     }
 
     void MaybeStartClock()
     {
         lock (_gate)
         {
-            if (_clockRunning || !_playing || _generation != _streamGen) return;
-            // Start once a little is buffered (or everything there is has been decoded).
-            bool videoReady = _queue.Count >= 2 || _streamEnded;
-            bool audioReady = _audio == null || _streamEnded || _audio.PendingFrames >= MediaSource.AudioRate / 10 ||
-                              (_queue.Count >= MaxQueue - 1);
+            if (_clockRunning || !_playing || _generation != _mixGen) return;
+            // Start once a few frames and a little sound are ready (or there's no more to come).
+            bool videoReady = _queue.Count >= 3 || _streamEnded;
+            bool audioReady = _audio == null || _audio.PendingFrames >= MediaSource.AudioRate / 5 || _streamEnded ||
+                              _queue.Count >= MaxQueue - 1;
             if (!videoReady || !audioReady) return;
             _clockRunning = true;
-            _base = _streamFrom;
             _anchor = _base;
             _anchorAge.Restart();
             _sw.Restart();
@@ -370,13 +540,56 @@ sealed class Playback : IDisposable
         }
     }
 
+    /// <summary><paramref name="a"/> = a × (1 − x) + b × x, per channel.</summary>
+    static void Blend(VideoFrame a, VideoFrame b, double x)
+    {
+        if (a.Width != b.Width || a.Height != b.Height) return;
+        uint wb = (uint)Math.Clamp((int)Math.Round(x * 256), 0, 256), wa = 256 - wb;
+        int pixels = a.Width * a.Height;
+        byte[] da = a.Data, db = b.Data;
+        Parallel.For(0, 8, k =>
+        {
+            var pa = MemoryMarshal.Cast<byte, uint>(da.AsSpan(0, pixels * 4));
+            var pb = MemoryMarshal.Cast<byte, uint>(db.AsSpan(0, pixels * 4));
+            int from = pixels * k / 8, to = pixels * (k + 1) / 8;
+            for (int i = from; i < to; i++)
+            {
+                uint c = pa[i], d = pb[i];
+                uint rb = (((c & 0x00FF00FF) * wa + (d & 0x00FF00FF) * wb) >> 8) & 0x00FF00FF;
+                uint ag = ((c >> 8) & 0x00FF00FF) * wa + ((d >> 8) & 0x00FF00FF) * wb & 0xFF00FF00;
+                pa[i] = rb | ag;
+            }
+        });
+    }
+
+    /// <summary>Scales the colour of <paramref name="a"/> by <paramref name="k"/> (0 = black), keeping it opaque.</summary>
+    static void Darken(VideoFrame a, double k)
+    {
+        uint w = (uint)Math.Clamp((int)Math.Round(k * 256), 0, 256);
+        int pixels = a.Width * a.Height;
+        byte[] da = a.Data;
+        Parallel.For(0, 8, part =>
+        {
+            var pa = MemoryMarshal.Cast<byte, uint>(da.AsSpan(0, pixels * 4));
+            int from = pixels * part / 8, to = pixels * (part + 1) / 8;
+            for (int i = from; i < to; i++)
+            {
+                uint c = pa[i];
+                pa[i] = ((c & 0x00FF00FF) * w >> 8 & 0x00FF00FF) | ((c & 0x0000FF00) * w >> 8 & 0x0000FF00) | 0xFF000000;
+            }
+        });
+    }
+
     public void Dispose()
     {
         lock (_gate) _quit = true;
         _wake.Set();
-        _thread.Join(2000);
+        _thread.Join(10000);
+        foreach (var lane in _lanes) lane?.Dispose();
+        _sound?.Dispose();
         _audio?.Dispose();
         _src.Dispose();
+        _src2?.Dispose();
         _wake.Dispose();
     }
 }

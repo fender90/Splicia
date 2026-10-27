@@ -29,56 +29,14 @@ sealed record TrimJob(MediaInfo Info, double Start, double End, int Rotation)
         return (Math.Max(2, w & ~1), Math.Max(2, h & ~1));
     }
 
-    /// <summary>Parts cut out of the video (sorted, not overlapping). Only the parts inside the selection matter.</summary>
-    public IReadOnlyList<Splice> Splices { get; init; } = Array.Empty<Splice>();
+    /// <summary>The timeline to export (clips, gaps, transitions); null = just [Start, End) of the file.</summary>
+    public EditList? Edit { get; init; }
 
-    /// <summary>
-    /// The kept parts of the selection, in order, and the transition at each place two of them meet (one fewer). Parts
-    /// shorter than half a frame are dropped.
-    /// </summary>
-    public (List<(double From, double To)> Parts, List<Transition> Joins) Pieces()
-    {
-        double min = Info.FrameDuration / 2;
-        var parts = new List<(double, double)>();
-        var after = new List<Transition>(); // the splice that ends each part
-        double cur = Start;
-        foreach (var sp in Splices.OrderBy(s => s.From))
-        {
-            if (sp.To <= cur || sp.From >= End) continue;
-            if (sp.From > cur + min) { parts.Add((cur, sp.From)); after.Add(sp.Transition); }
-            cur = Math.Max(cur, sp.To);
-            if (cur >= End) break;
-        }
-        if (End > cur + min) parts.Add((cur, End));
-        return (parts, after.Take(Math.Max(0, parts.Count - 1)).ToList());
-    }
+    /// <summary>True when exporting a timeline rather than one stretch of the file.</summary>
+    public bool IsEdited => Edit != null;
 
-    /// <summary>The joins with the transition times that fit the parts either side.</summary>
-    public List<Join> Joins()
-    {
-        var (parts, joins) = Pieces();
-        return joins.Select((t, i) => Join.For(t, parts[i].To - parts[i].From, parts[i + 1].To - parts[i + 1].From, Info.FrameDuration)).ToList();
-    }
-
-    /// <summary>Length of the exported video: the kept parts, less the crossfades' overlaps.</summary>
-    public double OutputLength()
-    {
-        var (parts, _) = Pieces();
-        return parts.Sum(p => p.To - p.From) - Joins().Sum(j => j.Overlap);
-    }
-
-    /// <summary>True when the result is made of more than one part.</summary>
-    public bool IsSpliced => Pieces().Parts.Count > 1;
-
-    /// <summary>
-    /// The same job without splices when they only shorten the selection (one part left), so it exports as a plain trim
-    /// (and can be copied without re-encoding). Unchanged when it is spliced or nothing is left.
-    /// </summary>
-    public TrimJob Simplified()
-    {
-        var (parts, _) = Pieces();
-        return parts.Count == 1 ? this with { Start = parts[0].From, End = parts[0].To, Splices = Array.Empty<Splice>() } : this;
-    }
+    /// <summary>Length of the exported video.</summary>
+    public double OutputLength() => Edit?.Length ?? Length;
 }
 
 /// <summary>Runs ffmpeg.exe to write the trimmed / rotated file.</summary>
@@ -101,7 +59,7 @@ static class Exporter
     /// <summary>Why "Original" (stream copy) isn't possible for this job, or null.</summary>
     public static string? OriginalUnavailableReason(TrimJob job)
     {
-        if (job.IsSpliced) return "Joining spliced parts needs re-encoding: choose H.264 or HEVC.";
+        if (job.IsEdited) return "Joining clips needs re-encoding: choose H.264 or HEVC.";
         if (job.Crop != null) return "Cropping needs re-encoding: choose H.264 or HEVC.";
         if (job.Rotation != 0 && !RotatableExtensions.Contains(OriginalExtension(job.Info)))
             return $"{OriginalExtension(job.Info).TrimStart('.').ToUpperInvariant()} files can't store a rotation, so rotating needs re-encoding.";
@@ -166,14 +124,17 @@ static class Exporter
 
     /// <summary>
     /// Input options and trim filters that select exactly [<paramref name="from"/>, <paramref name="to"/>): the input
-    /// stops a frame after the end (input-side -t, so a reverse filter sees no more than that), and trim / atrim cut
-    /// halfway between frames. Filter timestamps count from the seek point.
+    /// stops a frame after the end (input-side -t, so a reverse filter sees no more than that), the picture is cut
+    /// halfway between frames at both ends and the sound exactly at them. Filter timestamps count from the seek point.
     /// </summary>
     static (string[] Input, string VideoTrim, string AudioTrim) Window(MediaInfo info, double from, double to)
     {
         double seek = CutPoint(info, from), start = from - seek, end = to - seek;
         string[] input = { "-ss", S(seek), "-t", S(end + info.FrameDuration) };
-        return (input, $"trim=end={S(end)},setpts=PTS-STARTPTS", $"atrim=start={S(start)}:end={S(end)},asetpts=PTS-STARTPTS");
+        // Not on the first frame left out: the seek is rounded to the file's time base (1/30000 for 29.97 fps, where
+        // half a frame isn't a whole tick), which can put that frame a hair before the end and let it through.
+        double videoEnd = Math.Max(start, end - info.FrameDuration / 2);
+        return (input, $"trim=end={S(videoEnd)},setpts=PTS-STARTPTS", $"atrim=start={S(start)}:end={S(end)},asetpts=PTS-STARTPTS");
     }
 
     static List<string> Common() => new() { "-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", "-nostats" };
@@ -288,40 +249,53 @@ static class Exporter
     }
 
     /// <summary>
-    /// One input of a spliced run: [<paramref name="From"/>, <paramref name="To"/>) of the file, darkened over
-    /// <paramref name="FadeIn"/> at its start and <paramref name="FadeOut"/> at its end, crossfading from the one before
-    /// over <paramref name="Overlap"/> (0: they're concatenated).
+    /// One input of a timeline run: [<paramref name="From"/>, <paramref name="To"/>) of the file (or, with
+    /// <paramref name="Black"/>, that long of black and silence: a gap), darkened over <paramref name="FadeIn"/> at its
+    /// start and <paramref name="FadeOut"/> at its end, crossfading from the one before over <paramref name="Overlap"/>
+    /// (0: they're concatenated), with the sound's declick fades where it starts or stops abruptly
+    /// (<paramref name="CutIn"/>, <paramref name="CutOut"/>; see <see cref="EditList.Declick"/>).
     /// </summary>
-    readonly record struct Segment(double From, double To, double FadeIn, double FadeOut, double Overlap)
+    readonly record struct Segment(double From, double To, double FadeIn, double FadeOut, double Overlap, bool CutIn = false, bool CutOut = false,
+        bool Black = false)
     {
         public double Length => To - From;
+        public double DeclickLength => Math.Min(EditList.Declick, Length / 2);
     }
 
     /// <summary>
-    /// The inputs that make parts [<paramref name="first"/>, <paramref name="first"/> + <paramref name="count"/>). A run may
-    /// begin or end inside a crossfade: when its first part crossfades from the part before, it starts with that part's
-    /// last stretch (the overlap) to crossfade from; when its last part crossfades into the next run, it stops where that
-    /// overlap begins. Joined end to end, the runs are the whole export, frame for frame.
+    /// The inputs that make parts [<paramref name="first"/>, <paramref name="first"/> + <paramref name="count"/>) of the
+    /// timeline, with the gap before each. A part plays with its handles (see <see cref="EditList"/>). A run may begin or
+    /// end inside a crossfade: when its first part crossfades from the part before, it starts with that part's last
+    /// stretch (both handles' worth) to crossfade from; when its last part crossfades into the next run, it stops where
+    /// that crossfade begins. Joined end to end, the runs are the whole timeline, frame for frame.
     /// </summary>
-    static List<Segment> Plan(TrimJob job, int first, int count)
+    static List<Segment> Plan(EditList edit, int first, int count)
     {
-        var (parts, _) = job.Pieces();
-        var joins = job.Joins();
+        var parts = edit.Parts;
         var segs = new List<Segment>();
-        if (first > 0 && joins[first - 1].Overlap > 0)
-        {
-            double d = joins[first - 1].Overlap;
-            segs.Add(new Segment(parts[first - 1].To - d, parts[first - 1].To, 0, 0, 0));
-        }
         int last = first + count - 1;
         for (int i = first; i <= last; i++)
         {
-            double fadeIn = i > 0 ? joins[i - 1].FadeIn : 0, fadeOut = i < joins.Count ? joins[i].FadeOut : 0;
-            double overlap = i > 0 && segs.Count > 0 ? joins[i - 1].Overlap : 0;
-            double to = parts[i].To;
-            if (i == last && i < joins.Count) to -= joins[i].Overlap; // the next run starts with this stretch
-            segs.Add(new Segment(parts[i].From, to, fadeIn, fadeOut, overlap));
+            var p = parts[i];
+            double prevEnd = i == 0 ? 0 : parts[i - 1].PlayEnd;
+            if (p.PlayStart > prevEnd + edit.Frame / 2) segs.Add(new Segment(0, p.PlayStart - prevEnd, 0, 0, 0, Black: true));
+            if (i == first && i > 0 && p.HandleIn > 0)
+            {
+                var q = parts[i - 1];
+                segs.Add(new Segment(q.To - q.HandleOut, q.To + q.HandleOut, 0, 0, 0));
+            }
+            double to = p.To + p.HandleOut;
+            if (i == last && i + 1 < parts.Count && p.HandleOut > 0) to -= 2 * p.HandleOut; // the next run starts with this stretch
+            double overlap = p.HandleIn > 0 && segs.Count > 0 ? 2 * p.HandleIn : 0;
+            segs.Add(new Segment(p.From - p.HandleIn, to, p.FadeIn, p.FadeOut, overlap, p.CutIn, p.CutOut));
         }
+        if (last == parts.Count - 1)
+        {
+            double videoEnd = parts.Count == 0 ? 0 : parts[^1].PlayEnd;
+            if (edit.Length > videoEnd + edit.Frame / 2) segs.Add(new Segment(0, edit.Length - videoEnd, 0, 0, 0, Black: true));
+        }
+        // Nothing at all (no clips, a sound under half a frame): a frame of black to carry it.
+        if (segs.Count == 0) segs.Add(new Segment(0, Math.Max(edit.Length, edit.Frame), 0, 0, 0, Black: true));
         return segs;
     }
 
@@ -329,34 +303,64 @@ static class Exporter
     static double RunLength(List<Segment> segs) => segs.Sum(x => x.Length) - segs.Skip(1).Sum(x => x.Overlap);
 
     /// <summary>
-    /// The ffmpeg command line for a spliced run, with the picture (<paramref name="video"/>), the sound
+    /// The ffmpeg command line for a timeline run, with the picture (<paramref name="video"/>), the sound
     /// (<paramref name="audio"/>; uncompressed with <paramref name="pcm"/>) or both. Each input seeks straight to its
-    /// stretch (so long cut-out parts aren't decoded) and is trimmed like a plain export; then they're joined in order (a
-    /// crossfade overlaps two; a straight cut or a fade through black concatenates them) and rotated / cropped / encoded
-    /// once. All share a pixel format and time base, which crossfades need. A long graph goes in
-    /// <paramref name="graphFile"/> instead of on the command line, which Windows limits to 32K characters.
+    /// stretch (so footage left out isn't decoded) and is trimmed like a plain export; gaps are generated black and
+    /// silence; then they're joined in order (a crossfade overlaps two; anything else concatenates them) and rotated /
+    /// cropped / encoded once. All share a pixel format, picture size, time base and sound format, which joining needs.
+    /// A long graph goes in <paramref name="graphFile"/> instead of on the command line, which Windows limits to 32K.
     /// </summary>
     static string SplicedArguments(TrimJob job, ExportSettings s, HwEncoder? hw, List<Segment> segs, bool video, bool audio,
-        string output, bool pcm = false, bool forJoining = false, string? graphFile = null)
+        string output, bool pcm = false, bool forJoining = false, string? graphFile = null, string[]? outputOptions = null,
+        EditList? music = null)
     {
         var info = job.Info;
         string pixFmt = info.BitDepth > 8 || info.IsHdr ? "yuv420p10le" : "yuv420p";
+        const string Sound = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+        // Black pictures the size ffmpeg decodes the file to: it turns the picture by the file's own rotation first.
+        bool turned = info.Rotation % 180 == 90;
+        int bw = turned ? info.Height : info.Width, bh = turned ? info.Width : info.Height;
+        double sar = turned ? 1 / info.Sar : info.Sar;
+        // ... tagged with the file's colours, so filters that convert colour (HDR → SDR) see one kind of picture throughout.
+        static bool Known(string v) => v.Length > 0 && v != "unknown" && v != "reserved";
+        var tags = new List<string>();
+        if (Known(info.ColorPrimaries)) tags.Add($"color_primaries={info.ColorPrimaries}");
+        if (Known(info.ColorTransfer)) tags.Add($"color_trc={info.ColorTransfer}");
+        if (Known(info.ColorSpace)) tags.Add($"colorspace={info.ColorSpace}");
+        string colour = tags.Count > 0 ? ",setparams=range=tv:" + string.Join(":", tags) : "";
 
         var a = Common();
         var g = new StringBuilder();
+        int inputs = segs.Count(x => !x.Black);
         // Every input's decoder is open at once and decodes a little ahead, so they share the usual eight threads' worth
         // (at least two each) rather than taking eight each.
-        string threads = Math.Clamp(16 / segs.Count, 2, 8).ToString(Inv);
+        string threads = Math.Clamp(16 / Math.Max(1, inputs), 2, 8).ToString(Inv);
+        int input = 0;
         for (int k = 0; k < segs.Count; k++)
         {
             var seg = segs[k];
-            var (input, vtrim, atrim) = Window(info, seg.From, seg.To);
-            if (video) a.AddRange(new[] { "-threads", threads });
-            a.AddRange(input);
-            a.AddRange(new[] { "-i", info.Path });
+            string vtrim, atrim;
+            if (seg.Black)
+            {
+                vtrim = $"color=c=black:s={bw}x{bh}:r={info.Rate}:d={S(seg.Length)},setsar={S(sar)}{colour}";
+                atrim = $"anullsrc=r=48000:cl=stereo,atrim=duration={S(seg.Length)}";
+            }
+            else
+            {
+                var (inArgs, vt, at) = Window(info, seg.From, seg.To);
+                if (video) a.AddRange(new[] { "-threads", threads });
+                a.AddRange(inArgs);
+                a.AddRange(new[] { "-i", info.Path });
+                // On the exact frame grid: containers round timestamps (Matroska to whole milliseconds), and joins need
+                // the frames of every input exactly where the plan says (a variable frame rate is evened out).
+                vtrim = $"[{input}:v:0]{vt},fps={info.Rate}:round=near";
+                // A video without sound still gets a (silent) sound track when the audio track has something.
+                atrim = info.HasAudio ? $"[{input}:a:0]{at}" : $"anullsrc=r=48000:cl=stereo,atrim=duration={S(seg.Length)}";
+                input++;
+            }
             if (video)
             {
-                g.Append($"[{k}:v:0]{vtrim},format={pixFmt},settb=AVTB");
+                g.Append($"{vtrim},format={pixFmt},settb=AVTB");
                 if (seg.FadeIn > 0) g.Append($",fade=t=in:st=0:d={S(seg.FadeIn)}");
                 if (seg.FadeOut > 0) g.Append($",fade=t=out:st={S(seg.Length - seg.FadeOut)}:d={S(seg.FadeOut)}");
                 g.Append($"[v{k}];");
@@ -364,9 +368,11 @@ static class Exporter
             if (audio)
             {
                 // Padded to the stretch's exact length so the sound stays with the picture at every join.
-                g.Append($"[{k}:a:0]{atrim},apad=whole_dur={S(seg.Length)}");
-                if (seg.FadeIn > 0) g.Append($",afade=t=in:st=0:d={S(seg.FadeIn)}");
-                if (seg.FadeOut > 0) g.Append($",afade=t=out:st={S(seg.Length - seg.FadeOut)}:d={S(seg.FadeOut)}");
+                g.Append($"{atrim},apad=whole_dur={S(seg.Length)},{Sound}");
+                if (seg.FadeIn > 0) g.Append($",afade=t=in:st=0:d={S(seg.FadeIn)}:curve=qsin");
+                if (seg.FadeOut > 0) g.Append($",afade=t=out:st={S(seg.Length - seg.FadeOut)}:d={S(seg.FadeOut)}:curve=qsin");
+                if (seg.CutIn) g.Append($",afade=t=in:st=0:d={S(seg.DeclickLength)}");
+                if (seg.CutOut) g.Append($",afade=t=out:st={S(seg.Length - seg.DeclickLength)}:d={S(seg.DeclickLength)}");
                 g.Append($"[a{k}];");
             }
         }
@@ -379,7 +385,8 @@ static class Exporter
             if (seg.Overlap > 0)
             {
                 if (video) g.Append($"[{v}][v{k}]xfade=transition=fade:duration={S(seg.Overlap)}:offset={S(total - seg.Overlap)}[jv{k}];");
-                if (audio) g.Append($"[{au}][a{k}]acrossfade=d={S(seg.Overlap)}[ja{k}];");
+                // Constant power (qsin), like the preview (EditAudio.CrossGain).
+                if (audio) g.Append($"[{au}][a{k}]acrossfade=d={S(seg.Overlap)}:c1=qsin:c2=qsin[ja{k}];");
                 total += seg.Length - seg.Overlap;
             }
             else
@@ -393,6 +400,11 @@ static class Exporter
             au = $"ja{k}";
         }
 
+        if (audio && music is { Music.Count: > 0 })
+        {
+            g.Append($"[{au}]anull[main];");
+            au = MixMusic(a, g, music, input, "main", total);
+        }
         var enc = video ? EncodingFor(job, s, hw, forJoining) : null;
         if (enc != null) g.Append($"[{v}]{string.Join(",", enc.Filters)}[vout]");
         else g.Append($"[{au}]anull[aout]");
@@ -412,9 +424,36 @@ static class Exporter
         }
         else a.AddRange(new[] { "-map", "[aout]" });
         if (audio) a.AddRange(pcm ? new[] { "-c:a", "pcm_s16le" } : new[] { "-c:a", "aac", "-b:a", AudioBitrate(s) });
-        if (!pcm) a.AddRange(new[] { "-map_metadata", "0", "-movflags", "+faststart" });
+        if (!pcm) a.AddRange(input > 0 ? new[] { "-map_metadata", "0", "-movflags", "+faststart" } : new[] { "-movflags", "+faststart" });
+        if (outputOptions != null) a.AddRange(outputOptions);
         a.Add(output);
         return Join(a);
+    }
+
+    /// <summary>
+    /// Adds the audio track's clips as inputs (from input <paramref name="firstInput"/> on) and mixes them over
+    /// <paramref name="main"/>, the timeline's own sound (<paramref name="length"/> long): each trimmed to its stretch, faded
+    /// (qsin, like the preview), declicked at both ends and delayed to its place; summed without lowering the levels, as
+    /// the preview does. Returns the label of the mix.
+    /// </summary>
+    static string MixMusic(List<string> a, StringBuilder g, EditList edit, int firstInput, string main, double length)
+    {
+        const string Sound = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+        var labels = new List<string> { main };
+        for (int i = 0; i < edit.Music.Count; i++)
+        {
+            var c = edit.Music[i];
+            a.AddRange(new[] { "-ss", S(c.From), "-t", S(c.Length + 0.05), "-i", c.Path });
+            double d = c.DeclickLength;
+            g.Append($"[{firstInput + i}:a:0]atrim=end={S(c.Length)},asetpts=PTS-STARTPTS,apad=whole_dur={S(c.Length)},{Sound}");
+            if (c.FadeIn > 0) g.Append($",afade=t=in:st=0:d={S(c.FadeIn)}:curve=qsin");
+            if (c.FadeOut > 0) g.Append($",afade=t=out:st={S(c.Length - c.FadeOut)}:d={S(c.FadeOut)}:curve=qsin");
+            g.Append($",afade=t=in:st=0:d={S(d)},afade=t=out:st={S(c.Length - d)}:d={S(d)}");
+            g.Append($",adelay=delays={(long)Math.Round(c.Start * MediaSource.AudioRate)}S:all=1[m{i}];");
+            labels.Add($"m{i}");
+        }
+        g.Append(string.Concat(labels.Select(l => $"[{l}]")) + $"amix=inputs={labels.Count}:duration=first:normalize=0:dropout_transition=0,atrim=end={S(length)}[mixed];");
+        return "mixed";
     }
 
     /// <summary>One video-only piece of a back-and-forth export: [<paramref name="from"/>, <paramref name="to"/>), maybe reversed.</summary>
@@ -496,13 +535,12 @@ static class Exporter
     /// </summary>
     public static async Task RunAsync(TrimJob job, ExportSettings s, HwEncoder? hw, Action<double> progress, CancellationToken ct)
     {
-        job = job.Simplified();
         try
         {
-            if (job.IsSpliced)
+            if (job.IsEdited)
             {
                 if (s.Boomerang || s.Format == ExportFormat.Original)
-                    throw new NotSupportedException("A spliced video can't be exported as a back-and-forth loop or without re-encoding.");
+                    throw new NotSupportedException("A timeline of clips can't be exported as a back-and-forth loop or without re-encoding.");
                 await RunSplicedAsync(job, s, hw, progress, ct);
             }
             else if (s.Boomerang) await RunBoomerangAsync(job, s with { Format = s.Format == ExportFormat.Original ? ExportFormat.H264 : s.Format }, hw, progress, ct);
@@ -514,6 +552,20 @@ static class Exporter
             TryDelete(s.OutputPath);
             throw;
         }
+    }
+
+    /// <summary>
+    /// The export's sound alone, as 48 kHz stereo 16-bit WAV, made exactly as an export makes it (tests compare it with
+    /// what the preview plays).
+    /// </summary>
+    internal static Task RenderSoundAsync(TrimJob job, string wav, CancellationToken ct = default)
+    {
+        var edit = job.Edit ?? EditList.Single(job.Start, job.End);
+        var segs = Plan(edit, 0, edit.Parts.Count);
+        var s = new ExportSettings(ExportFormat.H264, ExportQuality.High, true, wav);
+        string args = SplicedArguments(job, s, null, segs, video: false, audio: true, wav, pcm: true,
+            outputOptions: new[] { "-ar", MediaSource.AudioRate.ToString(Inv), "-ac", "2" }, music: edit);
+        return RunFfmpegAsync(args, RunLength(segs), _ => { }, ct);
     }
 
     /// <summary>Command lines longer than this put the filter graph in a hidden file instead.</summary>
@@ -539,9 +591,10 @@ static class Exporter
     /// <summary>The parts in groups of consecutive ones, each small enough for one run (see <see cref="Plan"/>).</summary>
     internal static List<(int First, int Count)> Runs(TrimJob job)
     {
-        int n = job.Pieces().Parts.Count, max = MaxPartsPerRun(job.Info);
+        int n = job.Edit?.Parts.Count ?? 1, max = MaxPartsPerRun(job.Info);
         var runs = new List<(int, int)>();
         for (int first = 0; first < n; first += max) runs.Add((first, Math.Min(max, n - first)));
+        if (runs.Count == 0) runs.Add((0, 0)); // no video clips: black under the audio track
         return runs;
     }
 
@@ -554,7 +607,8 @@ static class Exporter
     static async Task RunSplicedAsync(TrimJob job, ExportSettings s, HwEncoder? hw, Action<double> progress, CancellationToken ct)
     {
         var info = job.Info;
-        bool sound = s.IncludeAudio && info.HasAudio;
+        var edit = job.Edit!;
+        bool sound = s.IncludeAudio && (info.HasAudio || edit.Music.Count > 0);
         double length = Math.Max(0.001, job.OutputLength());
         var runs = Runs(job);
         string dir = Path.GetDirectoryName(Path.GetFullPath(s.OutputPath))!;
@@ -563,7 +617,9 @@ static class Exporter
         bool joining = runs.Count > 1;
         async Task Run(List<Segment> segs, bool video, bool audio, bool pcm, string output, Action<double> report)
         {
-            string args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining);
+            // In one run the audio track is mixed in there; in several, when the runs are joined.
+            var music = runs.Count == 1 ? edit : null;
+            string args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining, music: music);
             if (args.Length <= MaxInlineArguments)
             {
                 await RunFfmpegAsync(args, RunLength(segs), report, ct);
@@ -572,7 +628,7 @@ static class Exporter
             string graph = Path.Combine(dir, $".splicia-{Guid.NewGuid():N}.txt");
             try
             {
-                args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining, graph);
+                args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining, graph, music: music);
                 File.SetAttributes(graph, File.GetAttributes(graph) | FileAttributes.Hidden);
                 await RunFfmpegAsync(args, RunLength(segs), report, ct);
             }
@@ -581,7 +637,7 @@ static class Exporter
 
         if (runs.Count == 1)
         {
-            await Run(Plan(job, 0, runs[0].Count), true, sound, false, s.OutputPath, progress);
+            await Run(Plan(edit, 0, runs[0].Count), true, sound, false, s.OutputPath, progress);
             return;
         }
 
@@ -597,7 +653,7 @@ static class Exporter
             double done = 0;
             for (int r = 0; r < runs.Count; r++)
             {
-                var segs = Plan(job, runs[r].First, runs[r].Count);
+                var segs = Plan(edit, runs[r].First, runs[r].Count);
                 string name = $"run{r:000}.mp4";
                 double before = done, len = RunLength(segs);
                 await Run(segs, true, false, false, Path.Combine(work.FullName, name), f => progress(pictureShare * (before + f * len) / length));
@@ -610,7 +666,7 @@ static class Exporter
                 done = 0;
                 for (int r = 0; r < runs.Count; r++)
                 {
-                    var segs = Plan(job, runs[r].First, runs[r].Count);
+                    var segs = Plan(edit, runs[r].First, runs[r].Count);
                     string name = $"sound{r:000}.wav";
                     double before = done, len = RunLength(segs);
                     await Run(segs, false, true, true, Path.Combine(work.FullName, name), f => progress(pictureShare + 0.1 * (before + f * len) / length));
@@ -627,8 +683,13 @@ static class Exporter
             var a = Common();
             a.AddRange(new[] { "-f", "concat", "-safe", "0", "-i", pictureList });
             if (sound) a.AddRange(new[] { "-f", "concat", "-safe", "0", "-i", soundList });
+            string? mixed = null;
+            var g = new StringBuilder("[1:a]anull[main];");
+            if (sound && edit.Music.Count > 0) mixed = MixMusic(a, g, edit, 2, "main", length); // adds the sound files as inputs
+            if (mixed != null) a.AddRange(new[] { "-filter_complex", g.ToString().TrimEnd(';') });
             a.AddRange(new[] { "-map", "0:v" });
-            if (sound) a.AddRange(new[] { "-map", "1:a" });
+            if (mixed != null) a.AddRange(new[] { "-map", $"[{mixed}]" });
+            else if (sound) a.AddRange(new[] { "-map", "1:a" });
             a.AddRange(new[] { "-c:v", "copy" });
             if (sound) a.AddRange(new[] { "-c:a", "aac", "-b:a", AudioBitrate(s) });
             if (s.Format == ExportFormat.Hevc) a.AddRange(new[] { "-tag:v", "hvc1" });

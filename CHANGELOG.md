@@ -6,12 +6,16 @@ All notable changes to Splicia are listed here.
 
 ### What's new
 
-- **Splice videos.** Cut a part out and join the ends: press S (or the scissors button) on the first frame to cut, then S again on the last one. Cut-out parts show on the timeline; drag their edges to adjust them, and playback skips them.
-- **Transitions.** Click the dot on a cut to choose how the ends meet: a straight cut, a crossfade, or a fade out and back in, from 0.25 to 2 seconds.
+- **A timeline of clips.** Press S (or the scissors button) to split the clip at the playhead. Click a clip to select it; Delete removes it and leaves a gap, Shift+Delete closes the gap. Drag clips to move them anywhere, or onto other clips to rearrange them. Gaps show black and silent. Undo and redo with Ctrl+Z and Ctrl+Y. This replaces trimming: split twice and delete the ends.
+- **Transitions.** Click the dot where two clips meet to choose a straight cut, a crossfade or a fade out and back in, from 0.25 to 2 seconds.
+- **Fades.** Fade any clip in or out by dragging the handle at its top corner, or from its right-click menu; the menu under ⋯ fades the start and end of the video.
+- **An audio track.** Drop WAV or MP3 files on it (or use the note button) to add music or sound. Move them along the track, drag their ends to trim them, and fade them in and out. The video's own sound shows as a waveform under its clips.
+- **Seamless playback.** The app plays the timeline exactly as it will be exported: no pause at cuts, crossfades and fades shown as they happen, and the sound mixed across every join without clicks. Looping is seamless too.
 
 ### Fixes
 
 - Exporting 4K HDR video to H.264 uses about half the memory.
+- Re-encoded exports of 29.97 fps video could gain an extra frame at the end of a cut.
 
 ## [1.0.5] - 2026-10-26
 

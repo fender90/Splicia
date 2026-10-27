@@ -51,8 +51,9 @@ static class Program
                 case "crop": CropTests.Run(); break;
                 case "ui": CropUiTests.Run(); break;
                 case "brand": BrandUiTests.Run(); break;
-                case "splice": SpliceTests.Run(); break;
-                case "spliceui": SpliceUiTests.Run(); break;
+                case "timeline": TimelineTests.Run(); break;
+                case "timelineui": TimelineUiTests.Run(); break;
+                case "play": PlaybackTests.Run(); break;
                 default: Console.WriteLine($"unknown mode {mode}"); return 1;
             }
         }
@@ -60,7 +61,7 @@ static class Program
         return H.Fails == 0 ? 0 : 2;
     }
 
-    /// <summary>Test clips (made once): a numbered-frame clip, 1080p testsrc, iPhone-like 4K HEVC HLG portrait, 60 fps MKV.</summary>
+    /// <summary>Test clips (made once): a numbered-frame clip, 1080p testsrc, iPhone-like 4K HEVC HLG portrait, 60 fps MKV, 29.97 fps MP4, two sound files.</summary>
     static void MakeVideos()
     {
         void Make(string name, string args)
@@ -84,5 +85,10 @@ static class Program
             File.Delete(tmp);
         }
         Make("t5_noaudio.mkv", "-f lavfi -i \"testsrc=size=1280x720:rate=60:duration=6\" -c:v libx264 -preset veryfast");
+        Make("t8_ntsc.mp4", "-f lavfi -i \"testsrc=size=640x360:rate=30000/1001:duration=8\" -f lavfi -i \"sine=f=500:duration=8\" " +
+                            "-c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest");
+        // Sound files for the audio track: a 1 kHz tone (WAV) and a 300 Hz tone (MP3).
+        Make("s1_tone.wav", "-f lavfi -i \"sine=f=1000:duration=3:sample_rate=44100\" -ac 2 -c:a pcm_s16le");
+        Make("s2_low.mp3", "-f lavfi -i \"sine=f=300:duration=4:sample_rate=44100\" -ac 2 -c:a libmp3lame -b:a 192k");
     }
 }

@@ -32,7 +32,7 @@ sealed class ExportDialog : PagedWindow
         ShowInTaskbar = false;
         _job = job;
         _info = job.Info;
-        _audio = _info.HasAudio;
+        _audio = HasSound;
         _format = _info.IsHdr ? ExportFormat.Hevc : ExportFormat.H264;
         _originalBlocked = Exporter.OriginalUnavailableReason(job);
         try
@@ -59,9 +59,13 @@ sealed class ExportDialog : PagedWindow
         var (w, h) = _job.OutputSize();
         string rot = _job.Rotation switch { 90 => "  ·  rotated 90° right", 180 => "  ·  rotated 180°", 270 => "  ·  rotated 90° left", _ => "" };
         string crop = _job.Crop != null ? "  ·  cropped" : "";
-        int joins = _job.Pieces().Joins.Count;
-        string spliced = joins > 0 ? $"  ·  {joins + 1} parts joined" : "";
-        return $"{MainForm.Fmt(_job.Start)} → {MainForm.Fmt(_job.End)}{spliced}  ·  {MainForm.Length(_job.OutputLength())}  ·  {w}×{h}{rot}{crop}";
+        if (_job.Edit is EditList e)
+        {
+            int n = e.Parts.Count, m = e.Music.Count;
+            string clips = $"{n} clip{(n == 1 ? "" : "s")}{(m > 0 ? $" + {m} sound{(m == 1 ? "" : "s")}" : "")}";
+            return $"Timeline  ·  {clips}  ·  {MainForm.Length(_job.OutputLength())}  ·  {w}×{h}{rot}{crop}";
+        }
+        return $"{MainForm.Fmt(_job.Start)} → {MainForm.Fmt(_job.End)}  ·  {MainForm.Length(_job.OutputLength())}  ·  {w}×{h}{rot}{crop}";
     }
 
     /// <summary>Length of the exported video: the selection (less spliced-out parts and crossfades), or forwards + backwards (minus the two turn frames) × repeats.</summary>
@@ -101,8 +105,8 @@ sealed class ExportDialog : PagedWindow
 
         // Back-and-forth loop, with how many times to repeat it on the same row
         var loop = AddControl(new ToggleSwitch("Back-and-forth loop", _boomerang,
-            _job.IsSpliced ? "Not available for a spliced video." : BoomerangDescription()), P(46), 20);
-        loop.Enabled = !_job.IsSpliced;
+            _job.IsEdited ? "Only for a single clip without added sound or fades." : BoomerangDescription()), P(46), 20);
+        loop.Enabled = !_job.IsEdited;
         int segW = P(200);
         var repeats = new Segmented("1×", "2×", "3×", "4×")
         {
@@ -119,9 +123,9 @@ sealed class ExportDialog : PagedWindow
             loop.Invalidate();
         };
 
-        var sound = AddControl(new ToggleSwitch(_info.HasAudio ? "Include sound" : "Include sound (this video has none)",
-            _audio && _info.HasAudio), P(28), 14);
-        sound.Enabled = _info.HasAudio;
+        var sound = AddControl(new ToggleSwitch(HasSound ? "Include sound" : "Include sound (this video has none)",
+            _audio && HasSound), P(28), 14);
+        sound.Enabled = HasSound;
         sound.CheckedChanged += (_, _) => _audio = sound.Checked;
 
         InlineError = AddText(note ?? "", Small, note != null ? Theme.Dim : Theme.Danger, 10, fixedHeight: P(36));
@@ -179,7 +183,7 @@ sealed class ExportDialog : PagedWindow
     void ChooseFileAndStart()
     {
         string ext = _format == ExportFormat.Original ? Exporter.OriginalExtension(_info) : ".mp4";
-        string suggested = Exporter.SuggestOutput(_info, ext, _boomerang ? "loop" : _job.IsSpliced ? "spliced" : "trimmed");
+        string suggested = Exporter.SuggestOutput(_info, ext, _boomerang ? "loop" : _job.IsEdited ? "edited" : "trimmed");
         using var dlg = new SaveFileDialog
         {
             Title = "Export video",
@@ -197,8 +201,11 @@ sealed class ExportDialog : PagedWindow
             ShowInlineError("Choose a different file name: the export can't replace the video it's made from.");
             return;
         }
-        Start(new ExportSettings(_format, _quality, _audio && _info.HasAudio, output, _boomerang, _repeats));
+        Start(new ExportSettings(_format, _quality, _audio && HasSound, output, _boomerang, _repeats));
     }
+
+    /// <summary>The video's own sound, or sounds on the audio track.</summary>
+    bool HasSound => _info.HasAudio || _job.Edit?.Music.Count > 0;
 
     // ───────────────────────── 2. progress ─────────────────────────
 

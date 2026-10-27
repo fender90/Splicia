@@ -68,7 +68,7 @@ sealed partial class MainForm
 
     /// <summary>Exported picture size for the current rotation and crop.</summary>
     (int W, int H) OutputSize() => _info == null ? (0, 0)
-        : new TrimJob(_info, _in, _out, _rot) { Crop = HasCrop ? _crop : null }.OutputSize();
+        : new TrimJob(_info, 0, 1, _rot) { Crop = HasCrop ? _crop : null }.OutputSize();
 
     // ───────────────────────── layout ─────────────────────────
 

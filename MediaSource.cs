@@ -19,6 +19,8 @@ sealed record MediaInfo
     /// <summary>Clockwise rotation the file asks players to apply (phones record portrait video this way).</summary>
     public int Rotation { get; init; }
     public double Fps { get; init; }
+    /// <summary><see cref="Fps"/> exactly ("30000/1001"): the export puts every clip's frames on this grid, the timeline's.</summary>
+    public string Rate { get; init; } = "30";
     public required string VideoCodec { get; init; }
     public int BitDepth { get; init; } = 8;
     public string ColorPrimaries { get; init; } = "";
@@ -52,6 +54,8 @@ sealed class VideoFrame
     public int Width, Height;
     public int Stride => Width * 4;
     public double Time;
+    /// <summary>While playing an edit: when the frame shows, in the edit's own time (see <see cref="EditList"/>).</summary>
+    public double Out;
     /// <summary>False for the approximate (nearest keyframe) previews shown while scrubbing.</summary>
     public bool Exact = true;
 
@@ -98,7 +102,8 @@ unsafe sealed class MediaSource : IDisposable
     /// <param name="decoders">False opens the container only (for inspecting packets).</param>
     /// <param name="threads">Video decoder threads (0 = by resolution × frame rate). Frame threading keeps a picture in
     /// flight per thread, so more threads cost memory (≈25 MB each at 4K) and seek latency.</param>
-    public MediaSource(string path, bool keyframesOnly = false, bool decoders = true, int threads = 0)
+    /// <param name="video">False opens only the sound decoder (the picture's packets are skipped undecoded).</param>
+    public MediaSource(string path, bool keyframesOnly = false, bool decoders = true, int threads = 0, bool video = true)
     {
         try
         {
@@ -111,24 +116,28 @@ unsafe sealed class MediaSource : IDisposable
             _vi = av_find_best_stream(_fmt, AVMediaType.AVMEDIA_TYPE_VIDEO, -1, -1, &vcodec, 0);
             // Cover art in audio files shows up as a single-picture "video" stream: not a video.
             if (_vi >= 0 && (_fmt->streams[_vi]->disposition & AV_DISPOSITION_ATTACHED_PIC) != 0) _vi = -1;
-            if (_vi < 0) throw new NotSupportedException("This file has no video.");
+            // Sound files (opened for their sound only) have no picture.
+            if (_vi < 0 && video) throw new NotSupportedException("This file has no video.");
             _ai = av_find_best_stream(_fmt, AVMediaType.AVMEDIA_TYPE_AUDIO, -1, _vi, &acodec, 0);
 
-            var vst = _fmt->streams[_vi];
-            _vtb = vst->time_base;
+            var vst = _vi >= 0 ? _fmt->streams[_vi] : null;
+            if (vst != null) _vtb = vst->time_base;
             _start = _fmt->start_time != AV_NOPTS_VALUE ? _fmt->start_time / (double)AV_TIME_BASE : 0;
-            var par = vst->codecpar;
+            var par = vst != null ? vst->codecpar : null;
 
             if (decoders)
             {
-                if (threads <= 0)
+                if (vst != null && threads <= 0)
                 {
                     // 3 threads for 1080p30, 6 for 4K30, 10 for 4K60
                     double rate = Q(vst->avg_frame_rate) is > 0 and < 1000 and var r ? r : 30;
                     threads = (int)Math.Round(2 + (double)par->width * par->height * rate / (1920 * 1080 * 30.0));
                 }
-                _vctx = OpenDecoder(vst, vcodec, video: true, Math.Clamp(threads, 2, Math.Min(12, Environment.ProcessorCount)));
-                if (keyframesOnly) _vctx->skip_frame = AVDiscard.AVDISCARD_NONKEY;
+                if (video && vst != null)
+                {
+                    _vctx = OpenDecoder(vst, vcodec, video: true, Math.Clamp(threads, 2, Math.Min(12, Environment.ProcessorCount)));
+                    if (keyframesOnly) _vctx->skip_frame = AVDiscard.AVDISCARD_NONKEY;
+                }
                 if (_ai >= 0)
                 {
                     try { _actx = OpenDecoder(_fmt->streams[_ai], acodec, video: false, 1); }
@@ -142,21 +151,36 @@ unsafe sealed class MediaSource : IDisposable
             _pushback = av_frame_alloc();
             if (_ai >= 0) _atb = _fmt->streams[_ai]->time_base;
 
-            var sar = av_guess_sample_aspect_ratio(_fmt, vst, null);
-            double fps = Q(vst->avg_frame_rate);
-            if (fps <= 0 || fps > 1000) fps = Q(vst->r_frame_rate);
-            if (fps <= 0 || fps > 1000) fps = 30;
+            AVCodecParameters* apar = _ai >= 0 ? _fmt->streams[_ai]->codecpar : null;
             double duration = _fmt->duration != AV_NOPTS_VALUE ? _fmt->duration / (double)AV_TIME_BASE
-                : vst->duration != AV_NOPTS_VALUE ? vst->duration * Q(_vtb) : 0;
+                : vst != null && vst->duration != AV_NOPTS_VALUE ? vst->duration * Q(_vtb)
+                : _ai >= 0 && _fmt->streams[_ai]->duration != AV_NOPTS_VALUE ? _fmt->streams[_ai]->duration * Q(_atb) : 0;
+            string container = Str(_fmt->iformat->long_name) ?? Str(_fmt->iformat->name) ?? "";
+            string? audioCodec = apar != null ? CodecName(apar->codec_id, apar->profile) : null;
 
+            if (vst == null)
+            {
+                Info = new MediaInfo
+                {
+                    Path = path, Container = container, FileSize = new FileInfo(path).Length, Duration = Math.Max(duration, 0),
+                    VideoCodec = "", AudioCodec = audioCodec,
+                    AudioChannels = apar != null ? apar->ch_layout.nb_channels : 0, AudioRate = apar != null ? apar->sample_rate : 0,
+                };
+                return;
+            }
+
+            var sar = av_guess_sample_aspect_ratio(_fmt, vst, null);
+            var frameRate = vst->avg_frame_rate;
+            if (Q(frameRate) <= 0 || Q(frameRate) > 1000) frameRate = vst->r_frame_rate;
+            if (Q(frameRate) <= 0 || Q(frameRate) > 1000) frameRate = new AVRational { num = 30, den = 1 };
+            double fps = Q(frameRate);
             var desc = av_pix_fmt_desc_get((AVPixelFormat)par->format);
             int depth = desc != null ? desc->comp[0].depth : 8;
-            AVCodecParameters* apar = _ai >= 0 ? _fmt->streams[_ai]->codecpar : null;
 
             Info = new MediaInfo
             {
                 Path = path,
-                Container = Str(_fmt->iformat->long_name) ?? Str(_fmt->iformat->name) ?? "",
+                Container = container,
                 FileSize = new FileInfo(path).Length,
                 Duration = Math.Max(duration, 0),
                 Width = par->width,
@@ -164,13 +188,14 @@ unsafe sealed class MediaSource : IDisposable
                 Sar = sar.num > 0 && sar.den > 0 ? Q(sar) : 1,
                 Rotation = ReadRotation(par),
                 Fps = fps,
+                Rate = $"{Math.Abs(frameRate.num)}/{Math.Abs(frameRate.den)}",
                 VideoCodec = CodecName(par->codec_id, par->profile),
                 BitDepth = depth,
                 ColorPrimaries = av_color_primaries_name(par->color_primaries) ?? "",
                 ColorTransfer = av_color_transfer_name(par->color_trc) ?? "",
                 ColorSpace = av_color_space_name(par->color_space) ?? "",
                 ColorRange = av_color_range_name(par->color_range) ?? "",
-                AudioCodec = apar != null ? CodecName(apar->codec_id, apar->profile) : null,
+                AudioCodec = audioCodec,
                 AudioChannels = apar != null ? apar->ch_layout.nb_channels : 0,
                 AudioRate = apar != null ? apar->sample_rate : 0,
             };

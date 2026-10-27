@@ -4,7 +4,7 @@ namespace Splicia;
 static class AppInfo
 {
     public const string Name = "Splicia";
-    public const string Tagline = "Trim, splice, rotate, crop and export videos";
+    public const string Tagline = "Cut, arrange, rotate, crop and export videos";
     public const string Publisher = "Vesperis Labs";
     public const string Website = "https://www.vesperislabs.com";
     public const string WebsiteLabel = "www.vesperislabs.com";

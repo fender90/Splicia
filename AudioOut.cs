@@ -26,6 +26,11 @@ sealed class AudioOut : IDisposable
     /// <summary>0..1, applied to the samples (so it never touches the system mixer).</summary>
     public float Volume { get; set; } = 1f;
 
+    internal delegate void PcmTap(ReadOnlySpan<byte> pcm);
+
+    /// <summary>Sees everything written, before the volume (tests record what would be heard).</summary>
+    internal PcmTap? Tap { get; set; }
+
     /// <summary>Opens the default output device. Throws if there is none.</summary>
     public AudioOut()
     {
@@ -52,6 +57,7 @@ sealed class AudioOut : IDisposable
     public void Write(ReadOnlySpan<byte> pcm)
     {
         if (pcm.IsEmpty) return;
+        Tap?.Invoke(pcm);
         lock (_gate)
         {
             if (_ringCount + pcm.Length > _ring.Length)

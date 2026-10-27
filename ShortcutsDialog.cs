@@ -3,7 +3,7 @@ namespace Splicia;
 /// <summary>Keyboard and mouse shortcuts in two columns, in the app's borderless window style.</summary>
 sealed class ShortcutsDialog : PagedWindow
 {
-    const int WinW = 820, WinH = 600, Gutter = 40, PageTop = 44, PageBottom = 28, Column = 360, KeyW = 176;
+    const int WinW = 860, WinH = 640, Gutter = 40, PageTop = 44, PageBottom = 28, Column = 380, KeyW = 200;
 
     static readonly (string Title, (string Keys, string Action)[] Rows)[] LeftColumn =
     {
@@ -13,40 +13,46 @@ sealed class ShortcutsDialog : PagedWindow
             ("← / →, mouse wheel", "Previous / next frame"),
             ("Shift + ← / →", "Back / forward 1 s"),
             ("Ctrl + ← / →, PgUp / PgDn", "Back / forward 10 s"),
-            ("Home / End", "Start / end of the selection"),
+            ("Home / End", "Start / end of the timeline"),
             ("↑ / ↓", "Volume"),
             ("M", "Mute"),
         }),
         ("VIEW & FILE", new[]
         {
             ("Ctrl + O", "Open a video"),
+            ("Ctrl + E", "Export"),
             ("Ctrl + wheel, pinch", "Zoom at the cursor"),
             ("Ctrl + 0", "Reset zoom"),
             ("F, F11, double-click", "Fullscreen"),
             ("Esc", "Leave fullscreen"),
         }),
+        ("ROTATE & CROP", new[]
+        {
+            ("R / Shift + R", "Rotate right / left"),
+            ("C", "Crop (again to finish)"),
+            ("Enter / Esc", "Keep / undo crop changes"),
+        }),
     };
 
     static readonly (string Title, (string Keys, string Action)[] Rows)[] RightColumn =
     {
-        ("TRIM, ROTATE & CROP", new[]
+        ("EDIT", new[]
         {
-            ("I  or  [", "Start the selection at this frame"),
-            ("O  or  ]", "End the selection at this frame"),
-            ("Drag the yellow handles", "Adjust the start and end"),
-            ("Drag the grip under it", "Move the selection"),
-            ("R / Shift + R", "Rotate right / left"),
-            ("C", "Crop (again to finish)"),
-            ("Enter / Esc", "Keep / undo crop changes"),
-            ("Ctrl + E", "Export"),
+            ("S", "Split the clip at the playhead"),
+            ("Click a clip", "Select it"),
+            ("Delete", "Delete it, leaving a gap"),
+            ("Shift + Delete", "Delete it and close the gap"),
+            ("Drag a clip", "Move it (onto others: rearrange)"),
+            ("Drag a clip's top corner", "Fade in / out"),
+            ("Click the dot between clips", "Transition"),
+            ("Right-click a clip", "Fades, delete"),
+            ("Ctrl + Z / Ctrl + Y", "Undo / redo"),
         }),
-        ("SPLICE", new[]
+        ("SOUND", new[]
         {
-            ("S", "Start cutting out at this frame"),
-            ("S again", "Cut out through this frame"),
-            ("Esc", "Cancel a cut you started"),
-            ("Click a cut's dot", "Transition, or restore the part"),
-            ("Drag a cut's edges", "Change what's cut out"),
+            ("Drop WAV / MP3 files", "Add them to the audio track"),
+            ("Drag a sound", "Move it along its track"),
+            ("Drag a sound's ends", "Trim it"),
         }),
     };
 

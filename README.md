@@ -1,6 +1,6 @@
 # Splicia
 
-Trim, splice, rotate, crop and export videos on Windows, with frame-exact cuts. By [Vesperis Labs](https://www.vesperislabs.com).
+Cut, arrange, rotate, crop and export videos on Windows, with frame-exact cuts and an audio track. By [Vesperis Labs](https://www.vesperislabs.com).
 
 ## Download
 
@@ -11,12 +11,16 @@ Requires Windows 10 or 11 (64-bit). See [CHANGELOG.md](CHANGELOG.md) for what's 
 ## Features
 
 - Opens the common video formats, including iPhone .mov (HEVC, HDR), .mp4, .mkv, .webm and .avi
-- Trim from the start or end, frame by frame, or drag the selection along the timeline
-- Splice: cut parts out and join the ends with a straight cut, a crossfade or a fade
+- A timeline of clips: split at the playhead, delete (leaving a gap or closing it), drag clips to move or rearrange them; undo and redo
+- Transitions where clips meet: a straight cut, a crossfade or a fade through black
+- Fade in and out on any clip, video or sound
+- An audio track: drop WAV or MP3 files on it, move them, trim their ends
+- Gaps play and export as black and silence; the timeline is as long as its last clip
+- Playback plays the timeline exactly as it exports: no stall at cuts, transitions shown, sound mixed without clicks
 - Rotate in 90° steps
 - Crop with a common aspect ratio, the original one, or freely
 - Export to H.264 or HEVC (hardware encoding when available, HDR kept), or keep the original streams
-- Back-and-forth loop export
+- Back-and-forth loop export (of a single clip)
 
 ## Building
 
