@@ -12,6 +12,7 @@ namespace Splicia;
 static class TimelineUiTests
 {
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     const BindingFlags Any = BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public;
     static object? Get(object o, string n) => o.GetType().GetField(n, Any) is FieldInfo fi ? fi.GetValue(o) : o.GetType().GetProperty(n, Any)!.GetValue(o);
@@ -71,6 +72,47 @@ static class TimelineUiTests
         Call(form, "SetVolume", 0f);
         Pump(2.0);
         double fd = 1 / 30.0;
+
+        // The whole video dragged right 3 s (a gap at the start), then back to 0: the timeline is 10 s again.
+        {
+            var vr0 = R(form, "VideoRect");
+            var whole = Tl(form).Clips[0];
+            float y = vr0.Top + vr0.Height / 2f;
+            Drag(form, new PointF(X(form, 5), y), new PointF(X(form, 8), y));
+            var right = Tl(form);
+            double viewRight = (double)Get(form, "_viewLen")!;
+            Drag(form, new PointF(X(form, 8), y), new PointF(X(form, 5), y));
+            var back = Tl(form);
+            double viewBack = (double)Get(form, "_viewLen")!;
+            H.Check(Math.Abs(right.Clips[0].Start - 3) < 0.05 && Math.Abs(right.End - 13) < 0.05,
+                $"dragged right 3 s: {Show(right)}, {right.End:0.###} s long, view {viewRight:0.##} s");
+            H.Check(back.Clips[0].Start == 0 && Math.Abs(back.End - whole.Length) < 1e-6 && Math.Abs(viewBack - viewRight / 13 * 10) < 0.2,
+                $"dragged back to 0: {Show(back)}, {back.End:0.###} s long (expected {whole.Length:0.###}), view {viewBack:0.##} s");
+            while (((System.Collections.ICollection)Get(form, "_undo")!).Count > 0) Key(form, Keys.Control | Keys.Z);
+
+            // The same with real mouse messages (Windows' own capture handling), many small moves, 3 s right and back.
+            void Send(int msg, PointF p, int buttons)
+            {
+                Set(form, "_ui", 1f);
+                SendMessage(form.Handle, msg, (IntPtr)buttons, (IntPtr)(((int)Math.Round(p.Y) << 16) | ((int)Math.Round(p.X) & 0xFFFF)));
+                Application.DoEvents();
+            }
+            void RealDrag(double from, double to)
+            {
+                Send(0x200, new PointF(X(form, from), y), 0);
+                Send(0x201, new PointF(X(form, from), y), 1);
+                for (int k = 1; k <= 20; k++) Send(0x200, new PointF(X(form, from + (to - from) * k / 20), y), 1);
+                Send(0x202, new PointF(X(form, to), y), 0);
+                Pump(0.1);
+            }
+            RealDrag(5, 8);
+            var right2 = Tl(form);
+            RealDrag(8, 5);
+            var back2 = Tl(form);
+            H.Check(Math.Abs(right2.End - 13) < 0.05 && back2.Clips[0].Start == 0 && Math.Abs(back2.End - whole.Length) < 1e-6,
+                $"real mouse: right {Show(right2)} ({right2.End:0.###} s), back {Show(back2)} ({back2.End:0.###} s), view {(double)Get(form, "_viewLen")!:0.##} s");
+            while (((System.Collections.ICollection)Get(form, "_undo")!).Count > 0) Key(form, Keys.Control | Keys.Z);
+        }
 
         // Split at 3 s and 6 s.
         Call(form, "GoTo", 3.0); Pump(0.3);
@@ -306,6 +348,41 @@ static class TimelineUiTests
             H.Check((bool)Get(sd, "_audio")! && (bool)Get(sd, "HasSound")!, "export window, silent video + a sound file: sound is included");
             sd.Close();
         }
+
+        // The control panel: pinned by default (full width, under the picture, there when the overlay hides); P unpins it.
+        form.ClientSize = new Size(1280, 860);
+        Pump(0.3);
+        var pr1 = R(form, "PanelRect");
+        var pic1 = (RectangleF)Get(form, "VideoRectF")!;
+        Set(form, "_ui", 0f);
+        string idle1 = Call(form, "HitTest", Point.Round(Centre(Button(form, "Split"))))!.ToString()!;
+        Set(form, "_ui", 1f);
+        H.Check((bool)Get(form, "_pinned")! && pr1.Left == 0 && pr1.Width == form.ClientSize.Width && pr1.Bottom == form.ClientSize.Height
+            && pic1.Top >= -0.5f && pic1.Bottom <= pr1.Top + 0.5f && idle1 == "Split",
+            $"pinned: panel {pr1}, picture {pic1} above it, a button with the overlay hidden: {idle1}");
+        Snap(form, "u8_pinned");
+        // The panel's background between the button groups: nothing happens there (it isn't the picture).
+        var gapPt = new PointF((Button(form, "Crop").Right + Button(form, "Vol").Left) / 2f, Centre(Button(form, "Crop")).Y);
+        string gapHit = Call(form, "HitTest", Point.Round(gapPt))!.ToString()!;
+        Pump(0.6);
+        Click(form, gapPt);
+        Pump(0.2);
+        H.Check(gapHit == "Panel" && !(bool)Get(form, "_playing")!, $"a click on the panel's background ({gapHit}) doesn't play");
+        Key(form, Keys.P);
+        Pump(0.2);
+        var pr2 = R(form, "PanelRect");
+        var pic2 = (RectangleF)Get(form, "VideoRectF")!;
+        Set(form, "_ui", 0f);
+        string idle2 = Call(form, "HitTest", Point.Round(Centre(Button(form, "Split"))))!.ToString()!;
+        Set(form, "_ui", 1f);
+        H.Check(!(bool)Get(form, "_pinned")! && pr2.Left > 0 && pr2.Bottom < form.ClientSize.Height && pic2.Height > pic1.Height && idle2 == "None",
+            $"unpinned: panel {pr2} floats, picture {pic2} fills the window, hidden with the overlay ({idle2})");
+        Snap(form, "u9_unpinned");
+        var pinAt = Centre(Button(form, "Pin"));
+        Click(form, pinAt);
+        Click(form, pinAt); // quickly again where the pin was: it moved, and the click is ignored
+        Pump(0.2);
+        H.Check((bool)Get(form, "_pinned")! && !(bool)Get(form, "_playing")!, "the pin button pins it again; a quick second click where it was does nothing");
 
         // Smallest window: the buttons don't run into each other.
         form.ClientSize = form.MinimumSize;

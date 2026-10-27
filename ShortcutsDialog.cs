@@ -24,6 +24,7 @@ sealed class ShortcutsDialog : PagedWindow
             ("Ctrl + wheel, pinch", "Zoom at the cursor"),
             ("Ctrl + 0", "Reset zoom"),
             ("F, F11, double-click", "Fullscreen"),
+            ("P", "Pin / unpin the control panel"),
             ("Esc", "Leave fullscreen"),
         }),
         ("ROTATE & CROP", new[]

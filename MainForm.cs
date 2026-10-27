@@ -15,13 +15,13 @@ sealed partial class MainForm : Form
     {
         None, Center, Ruler, Track, Clip, ClipFadeIn, ClipFadeOut, Junction, Music, MusicStart, MusicEnd, MusicFadeIn, MusicFadeOut,
         MusicLane, Play, Prev, Next, Undo, Redo, Split, Delete, AddAudio, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
-        Export, Min, Max, Close,
+        Export, Pin, Min, Max, Close, Panel /* the panel's background, between its controls */,
     }
     enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete,
+        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete,
         Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
         Hit.CropArea,
     };
@@ -64,6 +64,13 @@ sealed partial class MainForm : Form
     double _lastActivity = double.NegativeInfinity;
     Point _lastMousePos = new(int.MinValue, int.MinValue);
     float _ui = 1f; // overlay opacity 0..1
+    bool _pinned = true; // the control panel docked under the picture and always shown (unpinned: floats over it, hides when idle)
+    double _quietUntil; // clicks on the picture or the panel's background are ignored until then (right after the pin moved)
+    float _paintAlpha = -1f; // while painting a pinned panel: full strength, whatever the overlay's opacity
+
+    /// <summary>The opacity colours are drawn with: the overlay's, or the panel's while a pinned panel is painted.</summary>
+    float Alpha => _paintAlpha >= 0 ? _paintAlpha : _ui;
+    float PanelAlpha => _pinned ? 1f : _ui;
 
     // Zoom / pan: _zoom is relative to fit-to-window, _center is the image point (0..1) at the view centre.
     const float MaxZoom = 32f;
@@ -280,6 +287,7 @@ sealed partial class MainForm : Form
         get
         {
             int m = P(22), h = P(252);
+            if (_pinned) return new Rectangle(0, ClientSize.Height - h, ClientSize.Width, h);
             int w = Math.Min(ClientSize.Width - 2 * m, P(1180));
             return new Rectangle((ClientSize.Width - w) / 2, ClientSize.Height - m - h, w, h);
         }
@@ -317,6 +325,7 @@ sealed partial class MainForm : Form
             Hit.RotR => new Rectangle(left + 9 * step + P(32), rowY, bs, bs),
             Hit.Crop => new Rectangle(left + 10 * step + P(32), rowY, bs, bs),
             Hit.Export => new Rectangle(exportX, rowY, ExportW, bs),
+            Hit.Pin => new Rectangle(pr.Right - Pad - P(30), pr.Top + P(9), P(30), P(30)),
             Hit.More => new Rectangle(moreX, rowY, bs, bs),
             Hit.Full => new Rectangle(moreX - step, rowY, bs, bs),
             Hit.Loop => new Rectangle(moreX - 2 * step, rowY, bs, bs),
@@ -348,13 +357,15 @@ sealed partial class MainForm : Form
         return new Rectangle((int)Math.Round(cx - d / 2f), (int)Math.Round((top + bottom - d) / 2), d, d);
     }
 
-    static bool NeedsFile(Hit h) => h is not (Hit.None or Hit.Center or Hit.More or Hit.Full or Hit.Min or Hit.Max or Hit.Close);
+    static bool NeedsFile(Hit h) => h is not (Hit.None or Hit.Center or Hit.More or Hit.Full or Hit.Pin or Hit.Min or Hit.Max or Hit.Close);
 
     Hit HitTest(Point p)
     {
-        if (_ui < 0.5f) return Hit.None;
+        bool overlay = _ui >= 0.5f;
+        if (!overlay && !_pinned) return Hit.None;
         foreach (var h in HitOrder)
         {
+            if (!overlay && h is Hit.Min or Hit.Max or Hit.Close or Hit.Center or Hit.CropBar or Hit.CropArea) continue;
             if (h == Hit.CropBar)
             {
                 if (_cropping && CropBarRect.Contains(p)) return h;
@@ -382,7 +393,8 @@ sealed partial class MainForm : Form
             }
             else if (Rect(h).Contains(p) && (_info != null || !NeedsFile(h))) return h; // inactive without a file
         }
-        return Hit.None;
+        // The panel's own background is the panel, not the picture underneath: no play / pause, fullscreen or panning.
+        return (_pinned || overlay) && PanelRect.Contains(p) ? Hit.Panel : Hit.None;
     }
 
     RectangleF VideoRectF
@@ -393,12 +405,16 @@ sealed partial class MainForm : Form
             // The part of the frame shown (the crop, or all of it while cropping), fitted to the window or, in crop mode,
             // to the space between the aspect bar and the control panel.
             var src = SourceRect;
-            var area = _cropping ? CropEditArea : new RectangleF(0, 0, ClientSize.Width, ClientSize.Height);
+            var area = ViewArea;
             float s = Math.Min(area.Width / src.Width, area.Height / src.Height) * _zoom;
             float w = src.Width * s, h = src.Height * s;
             return new RectangleF(area.X + area.Width / 2f - _center.X * w, area.Y + area.Height / 2f - _center.Y * h, w, h);
         }
     }
+
+    /// <summary>Where the picture is fitted: above a pinned panel, else the whole window (crop mode has its own area).</summary>
+    RectangleF ViewArea => _cropping ? CropEditArea
+        : _pinned ? new RectangleF(0, 0, ClientSize.Width, PanelRect.Top) : new RectangleF(0, 0, ClientSize.Width, ClientSize.Height);
 
     // ───────────────────────── zoom / pan ─────────────────────────
 
@@ -407,7 +423,8 @@ sealed partial class MainForm : Form
     {
         var vr = VideoRectF;
         if (vr.Width <= 0) return;
-        float hx = ClientSize.Width / 2f / vr.Width, hy = ClientSize.Height / 2f / vr.Height;
+        var area = ViewArea;
+        float hx = area.Width / 2f / vr.Width, hy = area.Height / 2f / vr.Height;
         _center.X = hx >= 0.5f ? 0.5f : Math.Clamp(_center.X, hx, 1 - hx);
         _center.Y = hy >= 0.5f ? 0.5f : Math.Clamp(_center.Y, hy, 1 - hy);
     }
@@ -423,12 +440,17 @@ sealed partial class MainForm : Form
         if (z == _zoom) return;
         _zoom = z;
         var nr = VideoRectF;
-        _center = new PointF(u - (anchor.X - ClientSize.Width / 2f) / nr.Width, v - (anchor.Y - ClientSize.Height / 2f) / nr.Height);
+        var area = ViewArea;
+        _center = new PointF(u - (anchor.X - (area.X + area.Width / 2f)) / nr.Width, v - (anchor.Y - (area.Y + area.Height / 2f)) / nr.Height);
         ClampCenter();
         Invalidate();
     }
 
-    void ZoomCentered(float factor) => ZoomAt(factor, new Point(ClientSize.Width / 2, ClientSize.Height / 2));
+    void ZoomCentered(float factor)
+    {
+        var a = ViewArea;
+        ZoomAt(factor, Point.Round(new PointF(a.X + a.Width / 2, a.Y + a.Height / 2)));
+    }
 
     void ResetZoom()
     {
@@ -454,7 +476,7 @@ sealed partial class MainForm : Form
 
     // ───────────────────────── painting ─────────────────────────
 
-    Color C(int a, int r, int g, int b) => Color.FromArgb(Math.Clamp((int)(a * _ui), 0, 255), r, g, b);
+    Color C(int a, int r, int g, int b) => Color.FromArgb(Math.Clamp((int)(a * Alpha), 0, 255), r, g, b);
     Color C(int a, Color c) => C(a, c.R, c.G, c.B);
     Color W(int a) => C(a, 255, 255, 255);
 
@@ -517,9 +539,32 @@ sealed partial class MainForm : Form
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         if (_cropping && _bmp != null) DrawCropOverlay(g);
         if (_toast != null && Now < _toastUntil) DrawToast(g);
-        if (_ui <= 0.01f) return;
+        if (_ui <= 0.01f && PanelAlpha <= 0.01f) return;
         if (_blurDirty) UpdateBlur();
+        if (_ui > 0.01f) PaintOverlay(g);
 
+        // Control panel: docked along the bottom when pinned, at full strength whatever the overlay's opacity
+        _paintAlpha = PanelAlpha;
+        try
+        {
+            var pr = PanelRect;
+            if (_pinned)
+            {
+                using (var pp = new GraphicsPath()) { pp.AddRectangle(pr); Glass(g, pp, pr, darken: 135, outline: false); }
+                using var edge = new Pen(C(70, 130, 160, 255), 1f);
+                g.DrawLine(edge, pr.Left, pr.Top, pr.Right, pr.Top);
+            }
+            else using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr, darken: 135); // darker than the other glass: text and trim frame stay legible over bright video
+            DrawPanelContents(g, pr);
+            if (_cropping) DrawCropBar(g);
+            if (_hintVisible && _hover != Hit.None && _drag == Drag.None) DrawHint(g, _hover);
+        }
+        finally { _paintAlpha = -1f; }
+    }
+
+    /// <summary>The window buttons and the big play button, which fade with the overlay.</summary>
+    void PaintOverlay(Graphics g)
+    {
         // Window buttons
         var wb = WindowButtonsRect;
         using (var path = RoundRect(wb, wb.Height / 2f)) Glass(g, path, wb, darken: 125);
@@ -546,13 +591,6 @@ sealed partial class MainForm : Form
             if (_info == null) AddVideoGlyph(g, RectangleF.Inflate(cr, -cr.Width * 0.2f, -cr.Height * 0.2f), W(245));
             else PlayGlyph(g, new RectangleF(gr.X + gr.Width * 0.08f, gr.Y, gr.Width, gr.Height), W(245));
         }
-
-        // Control panel
-        var pr = PanelRect;
-        using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr, darken: 135); // darker than the other glass: text and trim frame stay legible over bright video
-        DrawPanelContents(g, pr);
-        if (_cropping) DrawCropBar(g);
-        if (_hintVisible && _hover != Hit.None && _drag == Drag.None) DrawHint(g, _hover);
     }
 
     void DrawPanelContents(Graphics g, Rectangle pr)
@@ -579,8 +617,9 @@ sealed partial class MainForm : Form
         }
 
         float timeW = g.MeasureString(time, _timeFont).Width, selW = g.MeasureString(sel, _smallFont).Width;
-        g.DrawString(title, _titleFont, titleBrush, new RectangleF(pr.Left + Pad, pr.Top + P(14), pr.Width - 2 * Pad - timeW - P(16), P(26)), sf);
-        g.DrawString(time, _timeFont, titleBrush, pr.Right - Pad - timeW, pr.Top + P(16));
+        float pinW = P(40); // the pin button at the top right
+        g.DrawString(title, _titleFont, titleBrush, new RectangleF(pr.Left + Pad, pr.Top + P(14), pr.Width - 2 * Pad - timeW - pinW - P(16), P(26)), sf);
+        g.DrawString(time, _timeFont, titleBrush, pr.Right - Pad - pinW - timeW, pr.Top + P(16));
         g.DrawString(sub, _smallFont, subBrush, new RectangleF(pr.Left + Pad, pr.Top + P(41), pr.Width - 2 * Pad - selW - P(16), P(18)), sf);
         using (var selBrush = new SolidBrush(C(230, Theme.AccentHover))) g.DrawString(sel, _smallFont, selBrush, pr.Right - Pad - selW, pr.Top + P(41));
 
@@ -588,10 +627,10 @@ sealed partial class MainForm : Form
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
-        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More })
+        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More, Hit.Pin })
         {
             var r = Rect(h);
-            bool enabled = (has || h is Hit.More or Hit.Full) && (h != Hit.Delete || _selClip >= 0 || _selMusic >= 0)
+            bool enabled = (has || h is Hit.More or Hit.Full or Hit.Pin) && (h != Hit.Delete || _selClip >= 0 || _selMusic >= 0)
                 && (h != Hit.Undo || _undo.Count > 0) && (h != Hit.Redo || _redo.Count > 0);
             if (_hover == h && enabled)
                 using (var hb = new SolidBrush(W(34))) g.FillEllipse(hb, r);
@@ -614,6 +653,7 @@ sealed partial class MainForm : Form
                 case Hit.Loop: LoopGlyph(g, gr, col); break;
                 case Hit.Full: FullGlyph(g, gr, col, _fullscreen); break;
                 case Hit.More: MoreGlyph(g, gr, col); break;
+                case Hit.Pin: PinGlyph(g, gr, _pinned ? C(255, Theme.AccentHover) : col, _pinned); break;
             }
         }
 
@@ -641,9 +681,9 @@ sealed partial class MainForm : Form
 
     void DrawFaded(Graphics g, Image img, RectangleF dest)
     {
-        if (_ui >= 0.999f) { g.DrawImage(img, dest); return; }
+        if (Alpha >= 0.999f) { g.DrawImage(img, dest); return; }
         using var ia = new ImageAttributes();
-        ia.SetColorMatrix(new ColorMatrix { Matrix33 = _ui });
+        ia.SetColorMatrix(new ColorMatrix { Matrix33 = Alpha });
         g.DrawImage(img, Rectangle.Round(dest), 0, 0, img.Width, img.Height, GraphicsUnit.Pixel, ia);
     }
 
@@ -701,6 +741,7 @@ sealed partial class MainForm : Form
         Hit.Loop => _loop ? "Loop: on" : "Loop: off",
         Hit.Full => _fullscreen ? "Exit fullscreen  (F)" : "Fullscreen  (F)",
         Hit.More => "More",
+        Hit.Pin => _pinned ? "Unpin the panel: it floats over the video and hides when idle  (P)" : "Pin the panel under the video  (P)",
         Hit.Export => "Export the timeline  (Ctrl+E)",
         Hit.Clip => "Drag to move or rearrange; right-click for fades and more",
         Hit.ClipFadeIn or Hit.MusicFadeIn => "Drag to fade in",
@@ -764,7 +805,7 @@ sealed partial class MainForm : Form
     /// Frosted glass in the brand colours: blurred video behind the shape, the logo's night-sky navy and an indigo tint,
     /// a soft top highlight and a hairline blue border.
     /// </summary>
-    void Glass(Graphics g, GraphicsPath path, Rectangle bounds, int tint = 70, int darken = 0)
+    void Glass(Graphics g, GraphicsPath path, Rectangle bounds, int tint = 70, int darken = 0, bool outline = true)
     {
         var st = g.Save();
         g.SetClip(path, CombineMode.Intersect);
@@ -773,7 +814,7 @@ sealed partial class MainForm : Form
         {
             using var ia = new ImageAttributes();
             ia.SetWrapMode(WrapMode.TileFlipXY);
-            if (_ui < 1f) ia.SetColorMatrix(new ColorMatrix { Matrix33 = _ui }); // colour matrix is the slow path; only while fading
+            if (Alpha < 1f) ia.SetColorMatrix(new ColorMatrix { Matrix33 = Alpha }); // colour matrix is the slow path; only while fading
             g.InterpolationMode = InterpolationMode.HighQualityBilinear;
             var vr = VideoRectF;
             var dest = Rectangle.Round(RectangleF.Intersect(vr, bounds));
@@ -788,6 +829,7 @@ sealed partial class MainForm : Form
         using (var hl = new LinearGradientBrush(new Rectangle(bounds.X, bounds.Y - 1, bounds.Width, bounds.Height + 2), W(30), W(6), 90f))
             g.FillRectangle(hl, bounds);
         g.Restore(st);
+        if (!outline) return;
         using var border = new Pen(C(70, 130, 160, 255), 1f);
         g.DrawPath(border, path);
     }
@@ -1188,6 +1230,36 @@ sealed partial class MainForm : Form
         }
     }
 
+    /// <summary>Pin button: a push pin, upright when the panel is pinned, tipped over when it isn't.</summary>
+    void PinGlyph(Graphics g, RectangleF r, Color c, bool pinned)
+    {
+        var st = g.Save();
+        float w = r.Width, h = r.Height, cx = r.X + w / 2, cy = r.Y + h / 2;
+        if (!pinned) { g.TranslateTransform(cx, cy); g.RotateTransform(45); g.TranslateTransform(-cx, -cy); }
+        using var pen = GlyphPen(c, 1.7f);
+        g.DrawLine(pen, r.X + w * 0.28f, r.Y + h * 0.04f, r.X + w * 0.72f, r.Y + h * 0.04f);
+        g.DrawLines(pen, new[]
+        {
+            new PointF(r.X + w * 0.38f, r.Y + h * 0.04f), new PointF(r.X + w * 0.38f, r.Y + h * 0.4f), new PointF(r.X + w * 0.16f, r.Y + h * 0.6f),
+            new PointF(r.X + w * 0.84f, r.Y + h * 0.6f), new PointF(r.X + w * 0.62f, r.Y + h * 0.4f), new PointF(r.X + w * 0.62f, r.Y + h * 0.04f),
+        });
+        g.DrawLine(pen, cx, r.Y + h * 0.6f, cx, r.Bottom);
+        g.Restore(st);
+    }
+
+    /// <summary>P / the pin button: the panel docked under the picture (always shown), or floating over it (hiding when idle).</summary>
+    void TogglePin()
+    {
+        _pinned = !_pinned;
+        _quietUntil = Now + SystemInformation.DoubleClickTime / 1000.0;
+        _hover = Hit.None; // the buttons moved
+        _hintVisible = false;
+        ClampCenter();
+        _blurDirty = true;
+        Activity();
+        Invalidate();
+    }
+
     static void MoreGlyph(Graphics g, RectangleF r, Color c)
     {
         using var b = new SolidBrush(c);
@@ -1275,6 +1347,8 @@ sealed partial class MainForm : Form
 
         if (moved) Activity();
         var h = HitTest(e.Location);
+        bool onPanel = h == Hit.Panel;
+        if (onPanel) h = Hit.None; // nothing to hover there
         int item = h == Hit.CropBar ? CropItemAt(e.Location) : int.MinValue;
         if (item != _hoverItem) { _hoverItem = item; Invalidate(CropBarRect); }
         int id = IsTimelineHit(h) ? _hitId : -1;
@@ -1289,7 +1363,7 @@ sealed partial class MainForm : Form
         Cursor = h is Hit.MusicStart or Hit.MusicEnd or Hit.ClipFadeIn or Hit.ClipFadeOut or Hit.MusicFadeIn or Hit.MusicFadeOut ? Cursors.SizeWE
             : h is Hit.Clip or Hit.Music ? Cursors.SizeAll
             : h == Hit.CropArea ? CropCursor(CropPartAt(e.Location)) : h == Hit.CropBar && item == int.MinValue ? Cursors.Default
-            : h != Hit.None ? Cursors.Hand : _zoom > 1f ? Cursors.SizeAll : Cursors.Default;
+            : h != Hit.None ? Cursors.Hand : _zoom > 1f && !onPanel ? Cursors.SizeAll : Cursors.Default;
     }
 
     protected override void OnMouseLeave(EventArgs e)
@@ -1301,7 +1375,7 @@ sealed partial class MainForm : Form
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        if (e.Button == MouseButtons.Right && _info != null && _ui >= 0.5f && _drag == Drag.None)
+        if (e.Button == MouseButtons.Right && _info != null && (_ui >= 0.5f || _pinned) && _drag == Drag.None)
         {
             var hr = HitTest(e.Location);
             Activity();
@@ -1314,6 +1388,8 @@ sealed partial class MainForm : Form
         var h = HitTest(e.Location);
         if (h != Hit.None) Activity();
         _hintVisible = false;
+        // Clicking the pin moves it with the panel: a quick click again where it was isn't meant for what's there now.
+        if (h is Hit.None or Hit.Panel && Now < _quietUntil) { _ignoreUp = true; return; }
         if (h == Hit.CropArea)
         {
             if (e.Clicks == 2 && CropPartAt(e.Location) == CropPart.Move) { FinishCrop(apply: true); return; } // double-click = done
@@ -1429,6 +1505,7 @@ sealed partial class MainForm : Form
             case Hit.Loop: ToggleLoop(); ShowToast(_loop ? "Loop: on" : "Loop: off"); break;
             case Hit.Full: ToggleFullscreen(); break;
             case Hit.More: ShowMenu(); break;
+            case Hit.Pin: TogglePin(); break;
             case Hit.Export: Export(); break;
             case Hit.Min: WindowState = FormWindowState.Minimized; break;
             case Hit.Max: ToggleMaximize(); break;
@@ -1511,9 +1588,10 @@ sealed partial class MainForm : Form
             case Keys.Up: SetVolume((_muted ? 0 : _volume) + 0.05f); return true;
             case Keys.Down: SetVolume((_muted ? 0 : _volume) - 0.05f); return true;
             case Keys.M: ToggleMute(); return true;
+            case Keys.P when _drag == Drag.None: TogglePin(); return true;
             case Keys.Control | Keys.E: Export(); return true;
             case Keys.Control | Keys.O: OpenDialog(); return true;
-            case Keys.F11: case Keys.F: ToggleFullscreen(); return true;
+            case Keys.F11 when _drag == Drag.None: case Keys.F when _drag == Drag.None: ToggleFullscreen(); return true;
             case Keys.Escape when _fullscreen: ToggleFullscreen(); return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
@@ -1636,10 +1714,10 @@ sealed partial class MainForm : Form
         if (_info.HasAudio)
         {
             _videoPeaks = new Peaks(path, _info.Duration, this);
-            _videoPeaks.Updated += () => { _peaksVersion++; if (_ui > 0) Invalidate(PanelRect); };
+            _videoPeaks.Updated += () => { _peaksVersion++; if (PanelAlpha > 0) Invalidate(PanelRect); };
         }
         _strip = new ThumbnailStrip(_info, this, P(46) * 2);
-        _strip.Updated += () => { _stripVersion++; if (_ui > 0) Invalidate(PanelRect); };
+        _strip.Updated += () => { _stripVersion++; if (PanelAlpha > 0) Invalidate(PanelRect); };
         Text = $"{Path.GetFileName(path)} — Splicia";
         ResetZoom();
         _tlVersion++;
@@ -1826,7 +1904,7 @@ sealed partial class MainForm : Form
         }
 
         // Hover hint after resting on a control
-        if (_hover != Hit.None && !_hintVisible && _drag == Drag.None && Now - _hoverSince > 0.6 && _ui >= 1f)
+        if (_hover != Hit.None && !_hintVisible && _drag == Drag.None && Now - _hoverSince > 0.6 && (_ui >= 1f || _pinned))
         {
             _hintVisible = true;
             Invalidate();
@@ -1850,12 +1928,12 @@ sealed partial class MainForm : Form
         if (_ui != target)
         {
             _ui = show ? Math.Min(1f, _ui + 0.2f) : Math.Max(0f, _ui - 0.08f);
-            if (_ui == 0f && _hover != Hit.None) { _hover = Hit.None; _hintVisible = false; }
+            if (_ui == 0f && _hover != Hit.None && !(_pinned && PanelRect.Contains(mouse))) { _hover = Hit.None; _hintVisible = false; }
             Invalidate();
         }
         // Cursor.Hide() hides the pointer for every window of the app (the export window included), so only while
         // this window is the active one and the pointer is over it.
-        bool hideCursor = _ui == 0f && mouseInside && !_dragArmed && ActiveForm == this;
+        bool hideCursor = _ui == 0f && mouseInside && !(_pinned && PanelRect.Contains(mouse)) && !_dragArmed && ActiveForm == this;
         if (hideCursor != _cursorHidden)
         {
             _cursorHidden = hideCursor;

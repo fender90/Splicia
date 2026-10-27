@@ -17,6 +17,7 @@ Requires Windows 10 or 11 (64-bit). See [CHANGELOG.md](CHANGELOG.md) for what's 
 - An audio track: drop WAV or MP3 files on it, move them, trim their ends
 - Gaps play and export as black and silence; the timeline is as long as its last clip
 - Playback plays the timeline exactly as it exports: no stall at cuts, transitions shown, sound mixed without clicks
+- The control panel docked under the video, or floating over it and hiding when idle
 - Rotate in 90° steps
 - Crop with a common aspect ratio, the original one, or freely
 - Export to H.264 or HEVC (hardware encoding when available, HDR kept), or keep the original streams

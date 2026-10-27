@@ -11,6 +11,7 @@ All notable changes to Splicia are listed here.
 - **Fades.** Fade any clip in or out by dragging the handle at its top corner, or from its right-click menu; the menu under ⋯ fades the start and end of the video.
 - **An audio track.** Drop WAV or MP3 files on it (or use the note button) to add music or sound. Move them along the track, drag their ends to trim them, and fade them in and out. The video's own sound shows as a waveform under its clips.
 - **Seamless playback.** The app plays the timeline exactly as it will be exported: no pause at cuts, crossfades and fades shown as they happen, and the sound mixed across every join without clicks. Looping is seamless too.
+- **A docked control panel.** The panel is now pinned under the video, full width, so it never covers the picture. Unpin it (the pin button or P) to have it float over the video and hide when idle, as before.
 
 ### Fixes
 

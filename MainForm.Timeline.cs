@@ -202,7 +202,7 @@ sealed partial class MainForm
             if (_tracks != null)
             {
                 using var ia = new ImageAttributes();
-                ia.SetColorMatrix(new ColorMatrix { Matrix33 = 0.85f * _ui });
+                ia.SetColorMatrix(new ColorMatrix { Matrix33 = 0.85f * Alpha });
                 g.DrawImage(_tracks, Rectangle.Round(to), from.Left - TrackLeft, from.Top - VideoRect.Top, from.Width, from.Height, GraphicsUnit.Pixel, ia);
             }
             Outline(g, to, Color.White);
@@ -220,7 +220,7 @@ sealed partial class MainForm
             if (_tracks != null)
             {
                 using var ia = new ImageAttributes();
-                ia.SetColorMatrix(new ColorMatrix { Matrix33 = 0.85f * _ui });
+                ia.SetColorMatrix(new ColorMatrix { Matrix33 = 0.85f * Alpha });
                 g.DrawImage(_tracks, Rectangle.Round(to), from.Left - TrackLeft, from.Top - VideoRect.Top, from.Width, from.Height, GraphicsUnit.Pixel, ia);
             }
             Outline(g, to, Color.White);
@@ -591,7 +591,7 @@ sealed partial class MainForm
             if (!_musicPeaks.ContainsKey(path))
             {
                 var pk = new Peaks(path, length, this);
-                pk.Updated += () => { _peaksVersion++; if (_ui > 0) Invalidate(PanelRect); };
+                pk.Updated += () => { _peaksVersion++; if (PanelAlpha > 0) Invalidate(PanelRect); };
                 _musicPeaks[path] = pk;
             }
             added++;
