@@ -68,9 +68,23 @@ static class TimelineUiTests
     {
         var form = new MainForm(null) { StartPosition = FormStartPosition.Manual, Location = new Point(-31900, -31900), ClientSize = new Size(1280, 860) };
         ShowWindow(form.Handle, 4); // SW_SHOWNOACTIVATE
+        // With no video the panel is just its header and buttons; a video brings the timeline in between.
+        Pump(0.3);
+        var emptyPanel = R(form, "PanelRect");
+        var emptyPlay = Button(form, "Play");
+        var add = Button(form, "Center");
+        int captionH = TextRenderer.MeasureText("Drop a video here, or click the button to browse", (Font)Get(form, "_hintFont")!).Height;
+        float groupMid = (add.Top + add.Bottom + 10 + captionH) / 2f;
+        H.Check(Math.Abs(groupMid - emptyPanel.Top / 2f) <= 2, $"no video: the add button and its caption centred above the panel ({groupMid:0.#} vs {emptyPanel.Top / 2f:0.#})");
+        Snap(form, "u0_no_video");
         Call(form, "Open", Path.Combine(H.Vids, "t7_counter.mp4"));
         Call(form, "SetVolume", 0f);
         Pump(2.0);
+        var fullPanel = R(form, "PanelRect");
+        var fullPlay = Button(form, "Play");
+        H.Check(emptyPanel.Bottom == fullPanel.Bottom && emptyPanel.Height < fullPanel.Height * 0.6 && emptyPlay.Top > emptyPanel.Top + 60
+            && emptyPlay.Bottom < emptyPanel.Bottom && fullPlay.Top > R(form, "MusicRect").Bottom,
+            $"no video: panel {emptyPanel.Height} px high, play button at {emptyPlay.Top}; a video: {fullPanel.Height} px, play button below the timeline");
         double fd = 1 / 30.0;
 
         // The whole video dragged right 3 s (a gap at the start), then back to 0: the timeline is 10 s again.
@@ -81,12 +95,15 @@ static class TimelineUiTests
             Drag(form, new PointF(X(form, 5), y), new PointF(X(form, 8), y));
             var right = Tl(form);
             double viewRight = (double)Get(form, "_viewLen")!;
+            float endX = X(form, right.End), trackEnd = R(form, "VideoRect").Right;
             Drag(form, new PointF(X(form, 8), y), new PointF(X(form, 5), y));
             var back = Tl(form);
             double viewBack = (double)Get(form, "_viewLen")!;
             H.Check(Math.Abs(right.Clips[0].Start - 3) < 0.05 && Math.Abs(right.End - 13) < 0.05,
                 $"dragged right 3 s: {Show(right)}, {right.End:0.###} s long, view {viewRight:0.##} s");
-            H.Check(back.Clips[0].Start == 0 && Math.Abs(back.End - whole.Length) < 1e-6 && Math.Abs(viewBack - viewRight / 13 * 10) < 0.2,
+            H.Check(Math.Abs(viewRight - right.End) < 1e-9 && Math.Abs(endX - trackEnd) < 1.5,
+                $"the timeline ends where the video does: view {viewRight:0.###} s, its end at x {endX:0.#} (track ends at {trackEnd})");
+            H.Check(back.Clips[0].Start == 0 && Math.Abs(back.End - whole.Length) < 1e-6 && Math.Abs(viewBack - back.End) < 1e-9,
                 $"dragged back to 0: {Show(back)}, {back.End:0.###} s long (expected {whole.Length:0.###}), view {viewBack:0.##} s");
             while (((System.Collections.ICollection)Get(form, "_undo")!).Count > 0) Key(form, Keys.Control | Keys.Z);
 

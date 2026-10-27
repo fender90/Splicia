@@ -58,11 +58,14 @@ sealed partial class MainForm
     double TimeAt(float x) => Math.Clamp((x - TrackLeft) / (double)TrackWidth, 0, 1) * _viewLen;
     double PxToTime(float px) => px / (double)TrackWidth * _viewLen;
 
-    /// <summary>Rescales the timeline to its length (a little room after the end to drop things), unless dragging.</summary>
+    /// <summary>
+    /// Rescales the timeline to its length, so its right edge is where the video ends (no empty stretch that looks like
+    /// part of it), unless dragging. Things dragged past the end make it longer when they're dropped.
+    /// </summary>
     void UpdateView()
     {
         if (_drag != Drag.None) return;
-        _viewLen = Math.Max(Math.Max(_tl.End, 1), 0.1) * 1.08;
+        _viewLen = _tl.End > 0 ? _tl.End : 1;
     }
 
     RectangleF ClipRect(Clip c) => new(X(c.Start), VideoRect.Top, Math.Max(1, X(c.End) - X(c.Start)), VideoRect.Height);
@@ -706,7 +709,8 @@ sealed partial class MainForm
         if (!_moved && Math.Abs(x - _downX) < SystemInformation.DragSize.Width && _drag is Drag.ClipMove or Drag.MusicMove) return;
         _moved = true;
         var b = _dragBase ?? _tl;
-        double t = TimeAt(x);
+        // Moves, and a sound's end, may go past the end of the timeline: the pointer isn't held to the track there.
+        double t = _drag is Drag.ClipMove or Drag.MusicMove or Drag.MusicEnd ? Math.Max(0, PxToTime(x - TrackLeft)) : TimeAt(x);
         switch (_drag)
         {
             case Drag.Seek:

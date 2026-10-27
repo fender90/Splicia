@@ -286,7 +286,7 @@ sealed partial class MainForm : Form
     {
         get
         {
-            int m = P(22), h = P(252);
+            int m = P(22), h = P(136) + TimelineSpace;
             if (_pinned) return new Rectangle(0, ClientSize.Height - h, ClientSize.Width, h);
             int w = Math.Min(ClientSize.Width - 2 * m, P(1180));
             return new Rectangle((ClientSize.Width - w) / 2, ClientSize.Height - m - h, w, h);
@@ -294,6 +294,9 @@ sealed partial class MainForm : Form
     }
 
     int Pad => P(24);
+
+    /// <summary>The timeline's share of the panel's height: none until a video is open (then just the header and buttons).</summary>
+    int TimelineSpace => _info != null ? P(116) : 0;
 
     Rectangle WindowButtonsRect
     {
@@ -305,7 +308,7 @@ sealed partial class MainForm : Form
     Rectangle Rect(Hit h)
     {
         var pr = PanelRect;
-        int bs = P(36), rowY = pr.Top + P(210) - bs / 2, step = P(42);
+        int bs = P(36), rowY = pr.Top + P(94) + TimelineSpace - bs / 2, step = P(42);
         int left = pr.Left + Pad - P(8), right = pr.Right - Pad + P(8);
         var wb = WindowButtonsRect;
         int d = P(78);
@@ -339,9 +342,11 @@ sealed partial class MainForm : Form
         };
     }
 
+    const string DropCaption = "Drop a video here, or click the button to browse";
+
     /// <summary>
     /// The big play button: in the middle of the picture as far as it can be seen above the control panel (the space
-    /// above the panel when there's no picture).
+    /// above the panel when there's no picture). With no video it's the add-video button, centred with its caption.
     /// </summary>
     Rectangle CenterRect(int d)
     {
@@ -354,7 +359,8 @@ sealed partial class MainForm : Form
             if (bottom - top < d) { top = 0; bottom = PanelRect.Top; }
         }
         float cx = vr.Width > 0 ? Math.Clamp(vr.Left + vr.Width / 2, d / 2f, ClientSize.Width - d / 2f) : ClientSize.Width / 2f;
-        return new Rectangle((int)Math.Round(cx - d / 2f), (int)Math.Round((top + bottom - d) / 2), d, d);
+        float lift = _info == null ? (P(10) + TextRenderer.MeasureText(DropCaption, _hintFont).Height) / 2f : 0;
+        return new Rectangle((int)Math.Round(cx - d / 2f), (int)Math.Round((top + bottom - d) / 2 - lift), d, d);
     }
 
     static bool NeedsFile(Hit h) => h is not (Hit.None or Hit.Center or Hit.More or Hit.Full or Hit.Pin or Hit.Min or Hit.Max or Hit.Close);
@@ -530,7 +536,7 @@ sealed partial class MainForm : Form
             using var bg = new LinearGradientBrush(ClientRectangle, Color.FromArgb(18, 22, 34), Color.FromArgb(6, 8, 12), 90f);
             g.FillRectangle(bg, ClientRectangle);
             if (_info == null)
-                TextRenderer.DrawText(g, "Drop a video here, or click the button to browse", _hintFont,
+                TextRenderer.DrawText(g, DropCaption, _hintFont,
                     new Rectangle(0, Rect(Hit.Center).Bottom + P(10), ClientSize.Width, P(40)), Color.FromArgb(140, 150, 165),
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.Top);
         }
@@ -586,10 +592,15 @@ sealed partial class MainForm : Form
         if (_info == null || !_playing && !_cropping)
         {
             var cr = Rect(Hit.Center);
-            using (var cp = new GraphicsPath()) { cp.AddEllipse(cr); Glass(g, cp, cr, _hover == Hit.Center ? 40 : 60); }
-            var gr = RectangleF.Inflate(cr, -cr.Width * 0.3f, -cr.Height * 0.3f);
-            if (_info == null) AddVideoGlyph(g, RectangleF.Inflate(cr, -cr.Width * 0.2f, -cr.Height * 0.2f), W(245));
-            else PlayGlyph(g, new RectangleF(gr.X + gr.Width * 0.08f, gr.Y, gr.Width, gr.Height), W(245));
+            // With no video, the add-video icon on its own (lit up on hover); the play button sits in a glass circle.
+            if (_info == null)
+                AddVideoGlyph(g, RectangleF.Inflate(cr, -cr.Width * 0.15f, -cr.Height * 0.15f), _hover == Hit.Center ? C(255, Theme.AccentHover) : W(235));
+            else
+            {
+                using (var cp = new GraphicsPath()) { cp.AddEllipse(cr); Glass(g, cp, cr, _hover == Hit.Center ? 40 : 60); }
+                var gr = RectangleF.Inflate(cr, -cr.Width * 0.3f, -cr.Height * 0.3f);
+                PlayGlyph(g, new RectangleF(gr.X + gr.Width * 0.08f, gr.Y, gr.Width, gr.Height), W(245));
+            }
         }
     }
 
