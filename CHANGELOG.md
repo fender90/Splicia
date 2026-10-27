@@ -2,7 +2,7 @@
 
 All notable changes to Splicia are listed here.
 
-## [1.0.6] - 2026-10-26
+## [1.0.6] - 2026-10-27
 
 ### What's new
 
