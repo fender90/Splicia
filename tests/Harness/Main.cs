@@ -51,6 +51,8 @@ static class Program
                 case "crop": CropTests.Run(); break;
                 case "ui": CropUiTests.Run(); break;
                 case "brand": BrandUiTests.Run(); break;
+                case "splice": SpliceTests.Run(); break;
+                case "spliceui": SpliceUiTests.Run(); break;
                 default: Console.WriteLine($"unknown mode {mode}"); return 1;
             }
         }

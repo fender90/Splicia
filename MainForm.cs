@@ -7,17 +7,22 @@ namespace Splicia;
 
 /// <summary>
 /// Borderless, fully custom-drawn main window: the video with a frosted-glass control overlay holding a filmstrip
-/// timeline with yellow trim handles, playback, rotate and export controls.
+/// timeline with yellow trim handles and spliced-out parts, playback, rotate, crop and export controls.
 /// </summary>
 sealed partial class MainForm : Form
 {
-    enum Hit { None, Center, Timeline, TrimIn, TrimOut, TrimMove, Play, Prev, Next, SetIn, SetOut, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More, Export, Min, Max, Close }
-    enum Drag { None, Seek, In, Out, Move, Volume, Crop }
+    enum Hit
+    {
+        None, Center, Timeline, TrimIn, TrimOut, TrimMove, SpliceChip, SpliceFrom, SpliceTo, Play, Prev, Next, SetIn, SetOut, Splice,
+        RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More, Export, Min, Max, Close,
+    }
+    enum Drag { None, Seek, In, Out, Move, Volume, Crop, SpliceFrom, SpliceTo }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.TrimIn, Hit.TrimOut, Hit.TrimMove, Hit.Timeline, Hit.Play, Hit.Prev, Hit.Next,
-        Hit.SetIn, Hit.SetOut, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
+        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.SpliceChip, Hit.TrimIn, Hit.TrimOut, Hit.TrimMove, Hit.SpliceFrom, Hit.SpliceTo,
+        Hit.Timeline, Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut, Hit.Splice, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider,
+        Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
         Hit.CropArea,
     };
     const double HideAfterSeconds = 2.5;
@@ -42,6 +47,7 @@ sealed partial class MainForm : Form
     bool _loop, _muted, _playing, _stopAtOut;
     float _volume = 1f;
     Drag _drag, _snap; // _snap: a handle was just released; line its edge up with the exact frame when it arrives
+    double _snapAt;    // ... the frame at this time (another frame arriving first cancels it)
     double _dragOffset; // pixels from the pointer to the grabbed handle's edge
     int _dragStartX;
     double _moveLength;  // selection length while dragging the selection along
@@ -87,16 +93,17 @@ sealed partial class MainForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         ClientSize = new Size(P(1100), P(700));
-        MinimumSize = new Size(P(840), P(520));
+        MinimumSize = new Size(P(890), P(520));
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         AllowDrop = true;
 
         BuildMenu();
+        BuildSpliceMenu();
         CrashLog.Context = () => _info == null ? "no file open" :
             $"file '{_info.Path}' {_info.Width}x{_info.Height} {_info.VideoCodec} {_info.BitDepth}-bit rot={_info.Rotation} " +
             $"{_info.Fps:0.###} fps dur={_info.Duration:0.###} audio={_info.AudioCodec ?? "none"}; pos={_pos:0.###} in={_in:0.###} " +
-            $"out={_out:0.###} userRot={_rot} playing={_playing} zoom={_zoom:0.##} client={ClientSize.Width}x{ClientSize.Height} " +
+            $"out={_out:0.###} splices={_splices.Count} userRot={_rot} playing={_playing} zoom={_zoom:0.##} client={ClientSize.Width}x{ClientSize.Height} " +
             $"dpi={DeviceDpi} fullscreen={_fullscreen}";
         _timer.Tick += (_, _) => Tick();
         _timer.Start();
@@ -314,9 +321,10 @@ sealed partial class MainForm : Form
             Hit.Next => new Rectangle(left + 2 * step, rowY, bs, bs),
             Hit.SetIn => new Rectangle(left + 3 * step + P(16), rowY, bs, bs),
             Hit.SetOut => new Rectangle(left + 4 * step + P(16), rowY, bs, bs),
-            Hit.RotL => new Rectangle(left + 5 * step + P(32), rowY, bs, bs),
-            Hit.RotR => new Rectangle(left + 6 * step + P(32), rowY, bs, bs),
-            Hit.Crop => new Rectangle(left + 7 * step + P(32), rowY, bs, bs),
+            Hit.Splice => new Rectangle(left + 5 * step + P(16), rowY, bs, bs),
+            Hit.RotL => new Rectangle(left + 6 * step + P(32), rowY, bs, bs),
+            Hit.RotR => new Rectangle(left + 7 * step + P(32), rowY, bs, bs),
+            Hit.Crop => new Rectangle(left + 8 * step + P(32), rowY, bs, bs),
             Hit.Export => new Rectangle(exportX, rowY, ExportW, bs),
             Hit.More => new Rectangle(moreX, rowY, bs, bs),
             Hit.Full => new Rectangle(moreX - step, rowY, bs, bs),
@@ -354,6 +362,11 @@ sealed partial class MainForm : Form
                 var c = Rect(h);
                 float dx = p.X - (c.Left + c.Width / 2f), dy = p.Y - (c.Top + c.Height / 2f);
                 if (dx * dx + dy * dy <= c.Width * c.Width / 4f) return h;
+            }
+            else if (h is Hit.SpliceChip or Hit.SpliceFrom or Hit.SpliceTo)
+            {
+                var (sh, si) = SpliceHitAt(p);
+                if (sh == h) { _hitSplice = si; return h; }
             }
             else if (h is Hit.TrimIn or Hit.TrimOut or Hit.TrimMove)
             {
@@ -514,6 +527,9 @@ sealed partial class MainForm : Form
             var clip = Rectangle.Intersect(e.ClipRectangle, new Rectangle(Point.Empty, _view!.Size));
             g.DrawImage(_view, clip, clip.X, clip.Y, clip.Width, clip.Height, GraphicsUnit.Pixel);
             g.CompositingMode = CompositingMode.SourceOver;
+            // Fades through black at splices, while playing (paused frames stay as they are, for editing).
+            if (_playing && FadeAt(_pos) is float dark and > 0.004f)
+                using (var black = new SolidBrush(Color.FromArgb((int)(255 * dark), 0, 0, 0))) g.FillRectangle(black, ClientRectangle);
         }
         else
         {
@@ -586,7 +602,9 @@ sealed partial class MainForm : Form
             sub += _info.HasAudio ? $"  ·  {_info.AudioCodec}" : "  ·  no sound";
             if (_rot != 0) sub += $"  ·  rotated {(_rot == 270 ? "90° left" : _rot == 90 ? "90° right" : "180°")}";
             if (_zoom > 1f) sub += $"  ·  zoom {_zoom * 100:0}%";
-            sel = $"Selection {Fmt(_in)} – {Fmt(_out)}   ({Length(_out - _in)})";
+            int cuts = SplicesInSelection;
+            sel = cuts == 0 ? $"Selection {Fmt(_in)} – {Fmt(_out)}   ({Length(_out - _in)})"
+                : $"Selection {Fmt(_in)} – {Fmt(_out)}   ({Length(CurrentJob().OutputLength())}, {cuts} splice{(cuts == 1 ? "" : "s")})";
         }
 
         float timeW = g.MeasureString(time, _timeFont).Width, selW = g.MeasureString(sel, _smallFont).Width;
@@ -599,7 +617,7 @@ sealed partial class MainForm : Form
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
-        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More })
+        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.SetIn, Hit.SetOut, Hit.Splice, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More })
         {
             var r = Rect(h);
             bool enabled = has || h is Hit.More or Hit.Full;
@@ -614,6 +632,7 @@ sealed partial class MainForm : Form
                 case Hit.Next: StepGlyph(g, gr, col, forward: true); break;
                 case Hit.SetIn: BracketGlyph(g, gr, enabled && _hover == h ? C(255, TrimColor) : col, start: true); break;
                 case Hit.SetOut: BracketGlyph(g, gr, enabled && _hover == h ? C(255, TrimColor) : col, start: false); break;
+                case Hit.Splice: ScissorsGlyph(g, gr, enabled && (_hover == h || _spliceMark != null) ? C(255, SpliceColor) : col); break;
                 case Hit.RotL: RotateGlyph(g, gr, col, clockwise: false); break;
                 case Hit.RotR: RotateGlyph(g, gr, col, clockwise: true); break;
                 case Hit.Crop: CropGlyph(g, gr, enabled && (HasCrop || _cropping) ? C(255, Theme.AccentHover) : col); break;
@@ -668,6 +687,7 @@ sealed partial class MainForm : Form
             using var dim = new SolidBrush(C(165, 0, 0, 0));
             if (xi > axL) g.FillRectangle(dim, axL, sr.Top, xi - axL, sr.Height);
             if (xo < axL + axW) g.FillRectangle(dim, xo, sr.Top, axL + axW - xo, sr.Height);
+            DrawSpliceBands(g, film);
         }
         g.Restore(st);
         if (_info == null) return;
@@ -694,6 +714,8 @@ sealed partial class MainForm : Form
             for (int i = -1; i <= 1; i++) g.FillEllipse(dot, grip.Left + grip.Width / 2f + i * P(6) - dr, dy - dr, 2 * dr, 2 * dr);
         }
 
+        DrawSpliceMarks(g);
+
         // Playhead
         {
             float x = X(_pos), top = sr.Top - P(5), bottom = sr.Bottom + P(5);
@@ -704,16 +726,22 @@ sealed partial class MainForm : Form
         }
 
         // Time label while dragging
-        if (_drag is Drag.Seek or Drag.In or Drag.Out || _drag == Drag.Move && _moved)
+        bool spliceDrag = _drag is Drag.SpliceFrom or Drag.SpliceTo && _dragSplice >= 0 && _dragSplice < _splices.Count;
+        if (_drag is Drag.Seek or Drag.In or Drag.Out || _drag == Drag.Move && _moved || spliceDrag)
         {
-            double t = _drag == Drag.In ? _in : _drag == Drag.Out ? _out : _pos;
-            float x = _drag switch { Drag.In => X(_in), Drag.Out => X(_out), Drag.Move => (X(_in) + X(_out)) / 2, _ => X(_pos) };
+            double t = _drag switch
+            {
+                Drag.In => _in, Drag.Out => _out,
+                Drag.SpliceFrom when spliceDrag => _splices[_dragSplice].From, Drag.SpliceTo when spliceDrag => _splices[_dragSplice].To,
+                _ => _pos,
+            };
+            float x = _drag switch { Drag.Move => (X(_in) + X(_out)) / 2, Drag.Seek => X(_pos), _ => X(t) };
             string label = _drag == Drag.Move ? $"{Fmt(_in)} – {Fmt(_out)}" : Fmt(t);
             var size = g.MeasureString(label, _timeFont);
             var r = new RectangleF(x - size.Width / 2 - P(9), sr.Top - P(12) - size.Height - P(6), size.Width + P(18), size.Height + P(6));
             r.X = Math.Clamp(r.X, PanelRect.Left + P(6), PanelRect.Right - P(6) - r.Width);
             using (var path = RoundRect(r, r.Height / 2))
-            using (var b = new SolidBrush(_drag == Drag.Seek ? C(235, 245, 246, 250) : C(255, TrimColor))) g.FillPath(b, path);
+            using (var b = new SolidBrush(_drag == Drag.Seek ? C(235, 245, 246, 250) : spliceDrag ? C(255, SpliceColor) : C(255, TrimColor))) g.FillPath(b, path);
             using var tb = new SolidBrush(C(255, 20, 20, 24));
             g.DrawString(label, _timeFont, tb, r.X + P(9), r.Y + P(3));
         }
@@ -811,6 +839,9 @@ sealed partial class MainForm : Form
         Hit.Next => "Next frame  (→)",
         Hit.SetIn => "Start selection here  (I)",
         Hit.SetOut => "End selection here  (O)",
+        Hit.Splice => _spliceMark == null ? "Splice: cut out a part and join the ends  (S)" : "Cut out up to this frame  (S, Esc cancels)",
+        Hit.SpliceFrom or Hit.SpliceTo => "Drag to adjust the cut",
+        Hit.SpliceChip => _hoverSplice >= 0 && _hoverSplice < _splices.Count ? $"{_splices[_hoverSplice].Transition}: click to change" : null,
         Hit.RotL => "Rotate left  (Shift+R)",
         Hit.RotR => "Rotate right  (R)",
         Hit.Crop => _cropping ? "Finish cropping  (C or Enter)" : HasCrop ? "Change the crop  (C)" : "Crop  (C)",
@@ -831,7 +862,10 @@ sealed partial class MainForm : Form
         if (HintText(h) is not string text) return;
         var anchor = h is Hit.TrimIn ? new RectangleF(X(_in) - HandleW, StripRect.Top, HandleW, 1)
             : h is Hit.TrimOut ? new RectangleF(X(_out), StripRect.Top, HandleW, 1)
-            : h is Hit.TrimMove ? new RectangleF((X(_in) + X(_out)) / 2, StripRect.Top, 1, 1) : Rect(h);
+            : h is Hit.TrimMove ? new RectangleF((X(_in) + X(_out)) / 2, StripRect.Top, 1, 1)
+            : h is Hit.SpliceChip or Hit.SpliceFrom or Hit.SpliceTo && _hoverSplice >= 0 && _hoverSplice < _splices.Count
+                ? new RectangleF(h == Hit.SpliceFrom ? X(_splices[_hoverSplice].From) : h == Hit.SpliceTo ? X(_splices[_hoverSplice].To) : ChipCenter(_splices[_hoverSplice]).X, StripRect.Top, 1, 1)
+            : Rect(h);
         if (h is Hit.Min or Hit.Max or Hit.Close or Hit.Timeline or Hit.Center) return;
         var size = g.MeasureString(text, _smallFont);
         var r = new RectangleF(anchor.X + anchor.Width / 2 - size.Width / 2 - P(10), anchor.Top - P(10) - size.Height - P(8),
@@ -1392,14 +1426,16 @@ sealed partial class MainForm : Form
         var h = HitTest(e.Location);
         int item = h == Hit.CropBar ? CropItemAt(e.Location) : int.MinValue;
         if (item != _hoverItem) { _hoverItem = item; Invalidate(CropBarRect); }
-        if (h != _hover)
+        int splice = h is Hit.SpliceChip or Hit.SpliceFrom or Hit.SpliceTo ? _hitSplice : -1;
+        if (h != _hover || splice != _hoverSplice)
         {
             if (_hintVisible) Invalidate(); else { InvalidateHit(_hover); InvalidateHit(h); }
             _hover = h;
+            _hoverSplice = splice;
             _hoverSince = Now;
             _hintVisible = false;
         }
-        Cursor = h is Hit.TrimIn or Hit.TrimOut ? Cursors.SizeWE : h == Hit.TrimMove ? Cursors.SizeAll
+        Cursor = h is Hit.TrimIn or Hit.TrimOut or Hit.SpliceFrom or Hit.SpliceTo ? Cursors.SizeWE : h == Hit.TrimMove ? Cursors.SizeAll
             : h == Hit.CropArea ? CropCursor(CropPartAt(e.Location)) : h == Hit.CropBar && item == int.MinValue ? Cursors.Default
             : h != Hit.None ? Cursors.Hand : _zoom > 1f ? Cursors.SizeAll : Cursors.Default;
     }
@@ -1413,6 +1449,12 @@ sealed partial class MainForm : Form
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Right && _info != null && _ui >= 0.5f && _drag == Drag.None && SpliceBandAt(e.Location) is int band and >= 0)
+        {
+            Activity();
+            ShowSpliceMenu(band, e.Location);
+            return;
+        }
         if (e.Button != MouseButtons.Left) return;
         var h = HitTest(e.Location);
         if (h != Hit.None) Activity();
@@ -1424,17 +1466,23 @@ sealed partial class MainForm : Form
             return;
         }
         if (h == Hit.CropBar) _pressedItem = CropItemAt(e.Location);
-        if (_info != null && h is Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove or Hit.VolSlider)
+        if (_info != null && h is Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove or Hit.VolSlider or Hit.SpliceFrom or Hit.SpliceTo)
         {
             if (h != Hit.VolSlider) Pause();
             _drag = h switch
             {
-                Hit.TrimIn => Drag.In, Hit.TrimOut => Drag.Out, Hit.TrimMove => Drag.Move, Hit.VolSlider => Drag.Volume, _ => Drag.Seek,
+                Hit.TrimIn => Drag.In, Hit.TrimOut => Drag.Out, Hit.TrimMove => Drag.Move, Hit.VolSlider => Drag.Volume,
+                Hit.SpliceFrom => Drag.SpliceFrom, Hit.SpliceTo => Drag.SpliceTo, _ => Drag.Seek,
             };
             _snap = Drag.None;
+            _dragSplice = _drag is Drag.SpliceFrom or Drag.SpliceTo ? _hitSplice : -1;
             // Grabbing a handle (or the selection) anywhere on it shouldn't make it jump: keep the pointer's offset from
             // the edge, in pixels so it survives the clamping at the ends of the timeline.
-            _dragOffset = _drag is Drag.In or Drag.Move ? X(_in) - e.X : _drag == Drag.Out ? X(_out) - e.X : 0;
+            _dragOffset = _drag switch
+            {
+                Drag.In or Drag.Move => X(_in) - e.X, Drag.Out => X(_out) - e.X,
+                Drag.SpliceFrom => X(_splices[_dragSplice].From) - e.X, Drag.SpliceTo => X(_splices[_dragSplice].To) - e.X, _ => 0,
+            };
             _dragStartX = e.X;
             _moveLength = _out - _in;
             _moved = false;
@@ -1443,6 +1491,7 @@ sealed partial class MainForm : Form
             return;
         }
         _pressed = h;
+        _pressedSplice = h == Hit.SpliceChip ? _hitSplice : -1;
         if (h == Hit.Export) InvalidateHit(h);
         if (h == Hit.None && !_cropping)
         {
@@ -1489,6 +1538,28 @@ sealed partial class MainForm : Form
                 _pos = _in;
                 _pb.ShowNear(_in);
                 break;
+            case Drag.SpliceFrom when _dragSplice >= 0 && _dragSplice < _splices.Count:
+            {
+                // The first frame cut out is on screen; the cut can't run into the previous one or close up.
+                var sp = _splices[_dragSplice];
+                double prev = _dragSplice > 0 ? _splices[_dragSplice - 1].To : 0;
+                double from = Math.Clamp(TimeAt(x + (float)_dragOffset), prev, Math.Max(prev, sp.To - minLen));
+                _splices[_dragSplice] = sp with { From = from };
+                _pos = from;
+                _pb.ShowNear(from);
+                break;
+            }
+            case Drag.SpliceTo when _dragSplice >= 0 && _dragSplice < _splices.Count:
+            {
+                // The last frame cut out is on screen.
+                var sp = _splices[_dragSplice];
+                double next = _dragSplice < _splices.Count - 1 ? _splices[_dragSplice + 1].From : Duration;
+                double to = Math.Clamp(TimeAt(x + (float)_dragOffset), Math.Min(next, sp.From + minLen), next);
+                _splices[_dragSplice] = sp with { To = to };
+                _pos = Math.Max(sp.From, to - 0.001);
+                _pb.ShowNear(_pos);
+                break;
+            }
             case Drag.Volume:
             {
                 var r = Rect(Hit.VolSlider);
@@ -1516,8 +1587,10 @@ sealed partial class MainForm : Form
                 _pos = TimeAt(e.X);
             }
             // The exact frame once the pointer is released (scrubbing shows nearby keyframes).
-            if (d is Drag.Seek or Drag.In or Drag.Out or Drag.Move && _pb != null) _pb.ShowAt(_pos);
-            _snap = d is Drag.In or Drag.Out or Drag.Move ? d : Drag.None;
+            if (d is Drag.Seek or Drag.In or Drag.Out or Drag.Move or Drag.SpliceFrom or Drag.SpliceTo && _pb != null) _pb.ShowAt(_pos);
+            _snap = d is Drag.In or Drag.Out or Drag.Move or Drag.SpliceFrom or Drag.SpliceTo ? d : Drag.None;
+            _snapAt = _pos;
+            if (d is not (Drag.SpliceFrom or Drag.SpliceTo)) _dragSplice = -1; // a splice's is kept until its exact frame arrives
             Invalidate();
             return;
         }
@@ -1539,6 +1612,14 @@ sealed partial class MainForm : Form
         if (h != pressed) return;
         switch (h)
         {
+            case Hit.SpliceChip:
+                if (_hitSplice == _pressedSplice)
+                {
+                    var c = ChipCenter(_splices[_hitSplice]);
+                    ShowSpliceMenu(_hitSplice, new Point((int)c.X, StripRect.Bottom + P(6)));
+                }
+                break;
+            case Hit.Splice: SpliceHere(); break;
             case Hit.None: if (_info != null && !_cropping) TogglePlay(); break;
             case Hit.CropBar:
             {
@@ -1593,7 +1674,7 @@ sealed partial class MainForm : Form
         if (h == Hit.None) return;
         var r = h switch
         {
-            Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove => PanelRect,
+            Hit.Timeline or Hit.TrimIn or Hit.TrimOut or Hit.TrimMove or Hit.SpliceChip or Hit.SpliceFrom or Hit.SpliceTo => PanelRect,
             Hit.Min or Hit.Max or Hit.Close => WindowButtonsRect,
             Hit.CropBar => CropBarRect,
             Hit.CropArea => ClientRectangle,
@@ -1625,6 +1706,8 @@ sealed partial class MainForm : Form
             case Keys.C: ToggleCrop(); return true;
             case Keys.Enter when _cropping: FinishCrop(apply: true); return true;
             case Keys.Escape when _cropping: FinishCrop(apply: false); return true;
+            case Keys.S: SpliceHere(); return true;
+            case Keys.Escape when _spliceMark != null: CancelSpliceMark(); return true;
             case Keys.Space: TogglePlay(); return true;
             case Keys.Left: Step(-1); return true;
             case Keys.Right: Step(+1); return true;
@@ -1677,6 +1760,8 @@ sealed partial class MainForm : Form
         _menu.Items.Add(Item("Reset rotation", () => Rotate(-_rot), null, has && _rot != 0));
         _menu.Items.Add(Item(_cropping ? "Finish cropping" : "Crop…", ToggleCrop, "C", has));
         _menu.Items.Add(Item("Remove crop", () => { ResetCrop(); FinishCrop(apply: true); }, null, has && HasCrop));
+        _menu.Items.Add(Item(_spliceMark == null ? "Splice (cut out a part)" : "Cut out up to this frame", SpliceHere, "S", has));
+        _menu.Items.Add(Item("Restore all spliced-out parts", ClearSplices, null, has && _splices.Count > 0));
         _menu.Items.Add(Item("Select the whole video", ResetSelection, null, has && (_in > 0 || _out < Duration)));
         _menu.Items.Add(Item((_loop ? "✓  " : "     ") + "Loop selection", () => _loop = !_loop, null, has));
         _menu.Items.Add(Item("Reset zoom", ResetZoom, "Ctrl+0", _zoom > 1f));
@@ -1751,6 +1836,8 @@ sealed partial class MainForm : Form
         _crop = _cropBefore = FullFrame;
         _cropping = false;
         _aspect = 0;
+        _splices.Clear();
+        _spliceMark = null;
         _strip = new ThumbnailStrip(_info, this, P(46) * 2);
         _strip.Updated += () => { _stripVersion++; if (_ui > 0) Invalidate(PanelRect); };
         Text = $"{Path.GetFileName(path)} — Splicia";
@@ -1844,7 +1931,9 @@ sealed partial class MainForm : Form
         if (_info == null || _pb == null) return;
         if (_playing) Pause();
         FinishCrop(apply: true);
-        var job = new TrimJob(_info, _in, _out, _rot) { Crop = HasCrop ? _crop : null };
+        var job = CurrentJob();
+        if (job.Pieces().Parts.Count == 0) { ShowToast("Everything in the selection is cut out"); return; }
+        job = job.Simplified();
         RevealCursor();
         using var dlg = new ExportDialog(job);
         dlg.ShowDialog(this);
@@ -1870,10 +1959,12 @@ sealed partial class MainForm : Form
     void Play()
     {
         if (_pb == null || _info == null) return;
+        if (NothingKept) { ShowToast("Everything in the selection is cut out"); return; }
         double from = _pos;
+        var (start, end) = KeptRange();
         // At (or right before) the end of the selection or the file: start over from the selection start.
-        if (from >= _out - FrameDur * 1.5 && from < _out + FrameDur) from = _in;
-        if (from >= Duration - FrameDur * 1.5) from = _in;
+        if (from >= end - FrameDur * 1.5 && from < _out + FrameDur) from = start;
+        if (from >= Duration - FrameDur * 1.5) from = start;
         _stopAtOut = from < _out;
         _playing = true;
         _pb.Play(from);
@@ -1936,24 +2027,27 @@ sealed partial class MainForm : Form
             if (_playing)
             {
                 double clock = _pb.Clock;
-                if (_stopAtOut && clock >= _out - 1e-4)
+                var (start, end) = KeptRange();
+                if (_stopAtOut && clock >= end - 1e-4)
                 {
-                    if (_loop) { _pb.Play(_in); }
+                    if (_loop) { _pb.Play(start); }
                     else
                     {
                         Pause();
-                        _pb.ShowAt(Math.Max(_in, _out - 0.001)); // exactly the last frame of the selection
+                        _pb.ShowAt(Math.Max(start, end - 0.001)); // exactly the last frame kept
                         Activity();
                     }
                 }
+                else if (CutAt(clock) is Splice cut) _pb.Play(cut.To); // jump over a spliced-out part, as the export does
                 else
                 {
-                    // Never show the first frame past the end of the selection, even for a moment.
-                    var f = _pb.TakeDue(_stopAtOut ? Math.Min(clock, _out - 0.003) : clock);
+                    // Never show the first frame past the end of the selection or into a spliced-out part, even for a moment.
+                    double limit = Math.Min(_stopAtOut ? end : double.PositiveInfinity, NextCut(clock));
+                    var f = _pb.TakeDue(Math.Min(clock, limit - 0.003));
                     if (f != null) Present(f, updatePos: true);
                     if (_pb.Ended)
                     {
-                        if (_loop) _pb.Play(_in);
+                        if (_loop) _pb.Play(start);
                         else { Pause(); Activity(); }
                     }
                 }
@@ -1962,12 +2056,31 @@ sealed partial class MainForm : Form
             {
                 bool exact = still.Exact && _drag == Drag.None;
                 Present(still, updatePos: exact);
+                if (exact && _snap != Drag.None && !(still.Time <= _snapAt + 1e-4 && _snapAt - still.Time < Math.Max(2 * FrameDur, 0.1)))
+                {
+                    // Another frame came first (the playhead moved on): that edge stays where it was dropped.
+                    _snap = Drag.None;
+                    _dragSplice = -1;
+                }
                 if (exact && _snap != Drag.None)
                 {
                     // Cuts happen on frame boundaries: the selection starts with the frame shown at its start and ends
-                    // after the frame shown at its end, so the export matches the preview exactly.
+                    // after the frame shown at its end, so the export matches the preview exactly. Splices likewise cut
+                    // from the frame shown at their start through the one shown at their end.
                     if (_snap == Drag.In) _in = Math.Min(still.Time, Math.Max(0, _out - FrameDur * 0.5));
                     else if (_snap == Drag.Out) _out = Math.Clamp(still.Time + FrameDur, _in + FrameDur * 0.5, Duration);
+                    else if (_snap is Drag.SpliceFrom or Drag.SpliceTo)
+                    {
+                        if (_dragSplice >= 0 && _dragSplice < _splices.Count)
+                        {
+                            var sp = _splices[_dragSplice];
+                            _splices[_dragSplice] = _snap == Drag.SpliceFrom
+                                ? sp with { From = Math.Min(still.Time, sp.To - FrameDur * 0.5) }
+                                : sp with { To = Math.Clamp(still.Time + FrameDur, sp.From + FrameDur * 0.5, Duration) };
+                            NormalizeSplices();
+                        }
+                        _dragSplice = -1;
+                    }
                     else
                     {
                         // Moved: the start lands on the frame shown, the length is kept.
@@ -1998,9 +2111,10 @@ sealed partial class MainForm : Form
         var mouse = PointToClient(MousePosition);
         // Over this window itself, not over a dialog, menu or other window that happens to sit on top of it.
         bool mouseInside = ClientRectangle.Contains(mouse) && WindowFromPoint(MousePosition) == Handle;
-        if (_info != null && !mouseInside && _drag == Drag.None && !_menu.Visible && !_cropping) HideOverlayNow();
+        bool menuOpen = _menu.Visible || _spliceMenu.Visible;
+        if (_info != null && !mouseInside && _drag == Drag.None && !menuOpen && !_cropping) HideOverlayNow();
         bool restingOnUi = _ui > 0f && !_panning && (PanelRect.Contains(mouse) || WindowButtonsRect.Contains(mouse));
-        bool show = _info == null || _cropping || _drag != Drag.None || _menu.Visible || restingOnUi || Now - _lastActivity < HideAfterSeconds;
+        bool show = _info == null || _cropping || _drag != Drag.None || menuOpen || restingOnUi || Now - _lastActivity < HideAfterSeconds;
         float target = show ? 1f : 0f;
         if (_ui != target)
         {

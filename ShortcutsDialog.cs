@@ -3,7 +3,7 @@ namespace Splicia;
 /// <summary>Keyboard and mouse shortcuts in two columns, in the app's borderless window style.</summary>
 sealed class ShortcutsDialog : PagedWindow
 {
-    const int WinW = 820, WinH = 520, Gutter = 40, PageTop = 44, PageBottom = 28, Column = 360, KeyW = 176;
+    const int WinW = 820, WinH = 600, Gutter = 40, PageTop = 44, PageBottom = 28, Column = 360, KeyW = 176;
 
     static readonly (string Title, (string Keys, string Action)[] Rows)[] LeftColumn =
     {
@@ -39,6 +39,14 @@ sealed class ShortcutsDialog : PagedWindow
             ("C", "Crop (again to finish)"),
             ("Enter / Esc", "Keep / undo crop changes"),
             ("Ctrl + E", "Export"),
+        }),
+        ("SPLICE", new[]
+        {
+            ("S", "Start cutting out at this frame"),
+            ("S again", "Cut out through this frame"),
+            ("Esc", "Cancel a cut you started"),
+            ("Click a cut's dot", "Transition, or restore the part"),
+            ("Drag a cut's edges", "Change what's cut out"),
         }),
     };
 

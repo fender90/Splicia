@@ -59,13 +59,15 @@ sealed class ExportDialog : PagedWindow
         var (w, h) = _job.OutputSize();
         string rot = _job.Rotation switch { 90 => "  ·  rotated 90° right", 180 => "  ·  rotated 180°", 270 => "  ·  rotated 90° left", _ => "" };
         string crop = _job.Crop != null ? "  ·  cropped" : "";
-        return $"{MainForm.Fmt(_job.Start)} → {MainForm.Fmt(_job.End)}  ·  {MainForm.Length(_job.Length)}  ·  {w}×{h}{rot}{crop}";
+        int joins = _job.Pieces().Joins.Count;
+        string spliced = joins > 0 ? $"  ·  {joins + 1} parts joined" : "";
+        return $"{MainForm.Fmt(_job.Start)} → {MainForm.Fmt(_job.End)}{spliced}  ·  {MainForm.Length(_job.OutputLength())}  ·  {w}×{h}{rot}{crop}";
     }
 
-    /// <summary>Length of the exported video: the selection, or forwards + backwards (minus the two turn frames) × repeats.</summary>
+    /// <summary>Length of the exported video: the selection (less spliced-out parts and crossfades), or forwards + backwards (minus the two turn frames) × repeats.</summary>
     double ResultLength()
     {
-        if (!_boomerang) return _job.Length;
+        if (!_boomerang) return _job.OutputLength();
         double fd = _info.FrameDuration;
         int n = Math.Max(1, (int)Math.Round(_job.Length / fd));
         return (n + Math.Max(0, n - 2)) * fd * _repeats;
@@ -98,7 +100,9 @@ sealed class ExportDialog : PagedWindow
         quality.SelectedChanged += (_, _) => _quality = (ExportQuality)quality.SelectedIndex;
 
         // Back-and-forth loop, with how many times to repeat it on the same row
-        var loop = AddControl(new ToggleSwitch("Back-and-forth loop", _boomerang, BoomerangDescription()), P(46), 20);
+        var loop = AddControl(new ToggleSwitch("Back-and-forth loop", _boomerang,
+            _job.IsSpliced ? "Not available for a spliced video." : BoomerangDescription()), P(46), 20);
+        loop.Enabled = !_job.IsSpliced;
         int segW = P(200);
         var repeats = new Segmented("1×", "2×", "3×", "4×")
         {
@@ -175,7 +179,7 @@ sealed class ExportDialog : PagedWindow
     void ChooseFileAndStart()
     {
         string ext = _format == ExportFormat.Original ? Exporter.OriginalExtension(_info) : ".mp4";
-        string suggested = Exporter.SuggestOutput(_info, ext, _boomerang ? "loop" : "trimmed");
+        string suggested = Exporter.SuggestOutput(_info, ext, _boomerang ? "loop" : _job.IsSpliced ? "spliced" : "trimmed");
         using var dlg = new SaveFileDialog
         {
             Title = "Export video",
