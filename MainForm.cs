@@ -14,14 +14,14 @@ sealed partial class MainForm : Form
     enum Hit
     {
         None, Center, Ruler, Track, Clip, ClipFadeIn, ClipFadeOut, Junction, Music, MusicStart, MusicEnd, MusicFadeIn, MusicFadeOut,
-        MusicLane, Play, Prev, Next, Split, Delete, AddAudio, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
+        MusicLane, Play, Prev, Next, Undo, Redo, Split, Delete, AddAudio, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
         Export, Min, Max, Close,
     }
     enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Split, Hit.Delete,
+        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete,
         Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
         Hit.CropArea,
     };
@@ -86,7 +86,7 @@ sealed partial class MainForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         ClientSize = new Size(P(1100), P(700));
-        MinimumSize = new Size(P(890), P(600));
+        MinimumSize = new Size(P(970), P(600));
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         AllowDrop = true;
@@ -307,12 +307,15 @@ sealed partial class MainForm : Form
             Hit.Play => new Rectangle(left, rowY, bs, bs),
             Hit.Prev => new Rectangle(left + step, rowY, bs, bs),
             Hit.Next => new Rectangle(left + 2 * step, rowY, bs, bs),
-            Hit.Split => new Rectangle(left + 3 * step + P(16), rowY, bs, bs),
-            Hit.Delete => new Rectangle(left + 4 * step + P(16), rowY, bs, bs),
-            Hit.AddAudio => new Rectangle(left + 5 * step + P(16), rowY, bs, bs),
-            Hit.RotL => new Rectangle(left + 6 * step + P(32), rowY, bs, bs),
-            Hit.RotR => new Rectangle(left + 7 * step + P(32), rowY, bs, bs),
-            Hit.Crop => new Rectangle(left + 8 * step + P(32), rowY, bs, bs),
+            // Three groups: playback; undo and redo; the tools (edit the timeline, turn and crop the picture).
+            Hit.Undo => new Rectangle(left + 3 * step + P(16), rowY, bs, bs),
+            Hit.Redo => new Rectangle(left + 4 * step + P(16), rowY, bs, bs),
+            Hit.Split => new Rectangle(left + 5 * step + P(32), rowY, bs, bs),
+            Hit.Delete => new Rectangle(left + 6 * step + P(32), rowY, bs, bs),
+            Hit.AddAudio => new Rectangle(left + 7 * step + P(32), rowY, bs, bs),
+            Hit.RotL => new Rectangle(left + 8 * step + P(32), rowY, bs, bs),
+            Hit.RotR => new Rectangle(left + 9 * step + P(32), rowY, bs, bs),
+            Hit.Crop => new Rectangle(left + 10 * step + P(32), rowY, bs, bs),
             Hit.Export => new Rectangle(exportX, rowY, ExportW, bs),
             Hit.More => new Rectangle(moreX, rowY, bs, bs),
             Hit.Full => new Rectangle(moreX - step, rowY, bs, bs),
@@ -585,10 +588,11 @@ sealed partial class MainForm : Form
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
-        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Split, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More })
+        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More })
         {
             var r = Rect(h);
-            bool enabled = (has || h is Hit.More or Hit.Full) && (h != Hit.Delete || _selClip >= 0 || _selMusic >= 0);
+            bool enabled = (has || h is Hit.More or Hit.Full) && (h != Hit.Delete || _selClip >= 0 || _selMusic >= 0)
+                && (h != Hit.Undo || _undo.Count > 0) && (h != Hit.Redo || _redo.Count > 0);
             if (_hover == h && enabled)
                 using (var hb = new SolidBrush(W(34))) g.FillEllipse(hb, r);
             var col = !enabled ? W(70) : h == Hit.Loop && !_loop ? W(110) : W(240);
@@ -598,6 +602,8 @@ sealed partial class MainForm : Form
                 case Hit.Play: if (_playing) PauseGlyph(g, gr, col); else PlayGlyph(g, gr, col); break;
                 case Hit.Prev: StepGlyph(g, gr, col, forward: false); break;
                 case Hit.Next: StepGlyph(g, gr, col, forward: true); break;
+                case Hit.Undo: UndoGlyph(g, gr, col, redo: false); break;
+                case Hit.Redo: UndoGlyph(g, gr, col, redo: true); break;
                 case Hit.Split: ScissorsGlyph(g, gr, enabled && _hover == h ? C(255, Theme.VioletHover) : col); break;
                 case Hit.Delete: TrashGlyph(g, gr, col); break;
                 case Hit.AddAudio: AddSoundGlyph(g, gr, enabled && _hover == h ? C(255, AudioColor) : col); break;
@@ -682,6 +688,8 @@ sealed partial class MainForm : Form
         Hit.Play => _playing ? "Pause  (Space)" : "Play  (Space)",
         Hit.Prev => "Previous frame  (←)",
         Hit.Next => "Next frame  (→)",
+        Hit.Undo => _undo.Count > 0 ? "Undo  (Ctrl+Z)" : "Nothing to undo",
+        Hit.Redo => _redo.Count > 0 ? "Redo  (Ctrl+Y)" : "Nothing to redo",
         Hit.Split => "Split the clip at the playhead  (S)",
         Hit.Delete => "Delete the selected clip  (Delete; Shift+Delete closes the gap)",
         Hit.AddAudio => "Add sound: WAV, MP3…  (or drop files on the audio track)",
@@ -1395,6 +1403,8 @@ sealed partial class MainForm : Form
                     ShowTransitionMenu(_hitId, new Point(e.X, WaveRect.Bottom + P(8)));
                 }
                 break;
+            case Hit.Undo: Undo(); break;
+            case Hit.Redo: Redo(); break;
             case Hit.Split: SplitHere(); break;
             case Hit.Delete: DeleteSelected(close: (ModifierKeys & Keys.Shift) != 0); break;
             case Hit.AddAudio: AddAudioDialog(); break;

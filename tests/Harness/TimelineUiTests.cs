@@ -60,6 +60,8 @@ static class TimelineUiTests
     static Rectangle R(Form f, string name) => (Rectangle)Get(f, name)!;
     static PointF ClipCentre(Form f, Clip c) => new(X(f, (c.Start + c.End) / 2), R(f, "VideoRect").Top + R(f, "VideoRect").Height / 2f);
     static double Pos(Form f) => (double)Get(f, "_pos")!;
+    static Rectangle Button(Form f, string hit) => (Rectangle)Call(f, "Rect", Enum.Parse(typeof(MainForm).GetNestedType("Hit", Any)!, hit))!;
+    static PointF Centre(Rectangle r) => new(r.X + r.Width / 2f, r.Y + r.Height / 2f);
 
     public static void Run()
     {
@@ -78,6 +80,14 @@ static class TimelineUiTests
         var tl = Tl(form);
         H.Check(tl.Clips.Count == 3 && tl.Clips[1].In == 3 && tl.Clips[2].In == 6, $"S splits at the playhead: {Show(tl)}");
         int a = tl.Clips[0].Id, b = tl.Clips[1].Id, c = tl.Clips[2].Id;
+
+        // The undo and redo buttons: back to two clips, then three again (the same timeline).
+        Click(form, Centre(Button(form, "Undo")));
+        int afterUndo = Tl(form).Clips.Count;
+        Click(form, Centre(Button(form, "Redo")));
+        H.Check(afterUndo == 2 && ReferenceEquals(Tl(form), tl), $"the undo button takes the second split back ({afterUndo} clips), redo puts it back ({Tl(form).Clips.Count})");
+        Click(form, Centre(Button(form, "Redo")));
+        H.Check(ReferenceEquals(Tl(form), tl) && (string?)Get(form, "_toast") == "Nothing to redo", $"redo with nothing to redo changes nothing and says so ({Get(form, "_toast")})");
 
         // Click the middle clip: selected, the playhead goes there.
         Click(form, ClipCentre(form, tl.Clips[1]));
@@ -301,7 +311,11 @@ static class TimelineUiTests
         form.ClientSize = form.MinimumSize;
         Pump(0.4);
         Rectangle Btn(string h) => (Rectangle)Call(form, "Rect", Enum.Parse(typeof(MainForm).GetNestedType("Hit", Any)!, h))!;
-        H.Check(Btn("AddAudio").Right < Btn("RotL").Left && Btn("Crop").Right + 4 <= Btn("Vol").Left, $"smallest window: add sound {Btn("AddAudio")}, crop {Btn("Crop")}, volume {Btn("Vol")}");
+        int Gap(string a, string b) => Btn(b).Left - Btn(a).Right;
+        // Groups: playback | undo, redo | the tools (split … crop, evenly spaced)
+        H.Check(Gap("Next", "Undo") > Gap("Prev", "Next") && Gap("Redo", "Split") > Gap("Undo", "Redo") && Gap("AddAudio", "RotL") == Gap("Split", "Delete")
+            && Gap("Crop", "Vol") >= 4,
+            $"smallest window: undo {Btn("Undo")}, add sound {Btn("AddAudio")}, crop {Btn("Crop")}, volume {Btn("Vol")}");
         Snap(form, "u7_smallest_window");
         form.Close();
     }

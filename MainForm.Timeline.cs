@@ -428,6 +428,21 @@ sealed partial class MainForm
         }
     }
 
+    /// <summary>Undo button: an arrow turning back to the left (redo: the mirror image, to the right).</summary>
+    void UndoGlyph(Graphics g, RectangleF r, Color c, bool redo)
+    {
+        using var pen = GlyphPen(c, 1.7f);
+        float w = r.Width, h = r.Height, top = r.Y + h * 0.28f, rad = h * 0.3f;
+        float X(float f) => redo ? r.Right - f * w : r.X + f * w;
+        using var path = new GraphicsPath();
+        path.AddLine(X(0.06f), top, X(0.58f), top);
+        path.AddArc(X(0.58f) - rad, top, 2 * rad, 2 * rad, -90, redo ? -180 : 180);
+        path.AddLine(X(0.58f), top + 2 * rad, X(0.3f), top + 2 * rad);
+        g.DrawPath(pen, path);
+        g.DrawLine(pen, X(0.06f), top, X(0.27f), top - h * 0.21f);
+        g.DrawLine(pen, X(0.06f), top, X(0.27f), top + h * 0.21f);
+    }
+
     /// <summary>Split button: scissors.</summary>
     void ScissorsGlyph(Graphics g, RectangleF r, Color c)
     {
@@ -484,7 +499,8 @@ sealed partial class MainForm
 
     void Undo()
     {
-        if (_undo.Count == 0 || _drag != Drag.None) return;
+        if (_info == null || _drag != Drag.None) return;
+        if (_undo.Count == 0) { ShowToast("Nothing to undo"); return; }
         _redo.Push(_tl);
         _tl = _undo.Pop();
         TimelineChanged();
@@ -493,7 +509,8 @@ sealed partial class MainForm
 
     void Redo()
     {
-        if (_redo.Count == 0 || _drag != Drag.None) return;
+        if (_info == null || _drag != Drag.None) return;
+        if (_redo.Count == 0) { ShowToast("Nothing to redo"); return; }
         _undo.Push(_tl);
         _tl = _redo.Pop();
         TimelineChanged();
