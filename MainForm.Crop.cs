@@ -201,6 +201,7 @@ sealed partial class MainForm
     {
         if (_info == null) return;
         if (_cropping) { FinishCrop(apply: true); return; }
+        FinishTrim(keep: true);
         _cropping = true;
         _cropBefore = _crop;
         _zoom = 1f;

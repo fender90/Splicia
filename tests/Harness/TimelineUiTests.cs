@@ -131,6 +131,54 @@ static class TimelineUiTests
             while (((System.Collections.ICollection)Get(form, "_undo")!).Count > 0) Key(form, Keys.Control | Keys.Z);
         }
 
+        // Trim, as earlier versions did, on the clip: T shows its whole video; the yellow handles to 3–6 s; the grip moves the
+        // part kept to 5–8 s; playing plays just that; Enter keeps it (3 s, from 0). Then I and O at the playhead; Esc cancels.
+        {
+            var vr0 = R(form, "VideoRect");
+            float y = vr0.Top + vr0.Height / 2f;
+            double In() => (double)Get(form, "_trimIn")!;
+            double Out() => (double)Get(form, "_trimOut")!;
+            bool Trimming() => (bool)Get(form, "Trimming")!;
+            var trimUndo = (System.Collections.ICollection)Get(form, "_undo")!;
+            Key(form, Keys.T);
+            H.Check(Trimming() && Math.Abs((double)Get(form, "_viewLen")! - 10) < 1e-6, "T trims the clip, showing its whole video");
+            Drag(form, new PointF(X(form, 0) + 2, y), new PointF(X(form, 3) + 2, y));
+            Drag(form, new PointF(X(form, 10) - 2, y), new PointF(X(form, 6) - 2, y));
+            H.Check(Math.Abs(In() - 3) < 0.05 && Math.Abs(Out() - 6) < 0.05, $"the yellow handles: keeping {In():0.###}–{Out():0.###}");
+            Mouse(form, "OnMouseMove", new PointF(X(form, 3) + 5, y));
+            Mouse(form, "OnMouseDown", new PointF(X(form, 3) + 5, y));
+            Mouse(form, "OnMouseUp", new PointF(X(form, 3) + 5, y));
+            H.Check(Math.Abs(In() - 3) < 0.05, $"a handle pressed off its centre stays put: {In():0.###}");
+            Pump(0.3);
+            Snap(form, "t1_trimming");
+            var grip = (RectangleF)Get(form, "TrimGripRect")!;
+            float gy = grip.Top + grip.Height / 2;
+            double before = Out() - In();
+            Drag(form, new PointF(X(form, 4.5), gy), new PointF(X(form, 6.5), gy));
+            H.Check(Math.Abs(In() - 5) < 0.05 && Math.Abs(Out() - In() - before) < 1e-6, $"the grip moves the part kept: {In():0.###}–{Out():0.###}");
+            Call(form, "Play");
+            var heard = new List<double>();
+            var stop = DateTime.UtcNow.AddSeconds(1.5);
+            while (DateTime.UtcNow < stop && (bool)Get(form, "_playing")!) { Application.DoEvents(); heard.Add(Pos(form)); Thread.Sleep(5); }
+            Call(form, "Pause");
+            H.Check(heard.Count > 20 && heard.Min() >= In() - 1e-6 && heard.Max() < Out(), $"playing plays the part kept: {heard.Min():0.##}–{heard.Max():0.##}");
+            int trimSteps = trimUndo.Count;
+            Key(form, Keys.Enter);
+            var kept = Tl(form);
+            H.Check(!Trimming() && kept.Clips.Count == 1 && Math.Abs(kept.Clips[0].In - 5) < 0.05 && kept.Clips[0].Start == 0 && Math.Abs(kept.End - before) < 1e-6
+                && trimUndo.Count == trimSteps + 1, $"Enter keeps it: {Show(kept)}");
+            Key(form, Keys.Control | Keys.Z);
+            H.Check(Math.Abs(Tl(form).Clips[0].Length - 10) < 1e-6, "and undoes in one step");
+            Call(form, "GoTo", 2.0); Pump(0.2);
+            Key(form, Keys.I);
+            Call(form, "GoTo", 4.0); Pump(0.2);
+            Key(form, Keys.OemCloseBrackets);
+            H.Check(Trimming() && Math.Abs(In() - 2) < 1e-6 && Math.Abs(Out() - (4 + fd)) < 1e-6, $"I and ] at the playhead: {In():0.###}–{Out():0.###}");
+            trimSteps = trimUndo.Count;
+            Key(form, Keys.Escape);
+            H.Check(!Trimming() && Math.Abs(Tl(form).Clips[0].Length - 10) < 1e-6 && trimUndo.Count == trimSteps, "Esc leaves the clip as it was");
+        }
+
         // Split at 3 s and 6 s.
         Call(form, "GoTo", 3.0); Pump(0.3);
         Key(form, Keys.S);
@@ -407,7 +455,7 @@ static class TimelineUiTests
         Rectangle Btn(string h) => (Rectangle)Call(form, "Rect", Enum.Parse(typeof(MainForm).GetNestedType("Hit", Any)!, h))!;
         int Gap(string a, string b) => Btn(b).Left - Btn(a).Right;
         // Groups: playback | undo, redo | the tools (split … crop, evenly spaced)
-        H.Check(Gap("Next", "Undo") > Gap("Prev", "Next") && Gap("Redo", "Split") > Gap("Undo", "Redo") && Gap("AddAudio", "RotL") == Gap("Split", "Delete")
+        H.Check(Gap("Next", "Undo") > Gap("Prev", "Next") && Gap("Redo", "Split") > Gap("Undo", "Redo") && Gap("AddAudio", "RotL") == Gap("Split", "Trim") && Gap("Trim", "Delete") == Gap("Split", "Trim")
             && Gap("Crop", "Vol") >= 4,
             $"smallest window: undo {Btn("Undo")}, add sound {Btn("AddAudio")}, crop {Btn("Crop")}, volume {Btn("Vol")}");
         Snap(form, "u7_smallest_window");

@@ -1,7 +1,7 @@
 <Project>
   <!-- One version for the app, its installer (build.ps1 reads it from here) and the test harness. -->
   <PropertyGroup>
-    <Version>1.0.6</Version>
+    <Version>1.0.7</Version>
     <!-- The plain version everywhere (exe properties, setup, About, Settings → Apps): no "+<git commit>" suffix. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>

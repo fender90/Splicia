@@ -225,6 +225,20 @@ static class TimelineTests
             $"clip fades give way to a crossfade on the same edge (out {e6.Parts[0].FadeOut}, in {e6.Parts[1].FadeIn}); the other ends keep theirs");
         H.Check(EditList.Of(del).Locate(4) == 1 && EditList.Of(del).Locate(11) == 2, "locating a time in a gap finds the next clip, past the clips none");
 
+        // Trim: keep a part of a clip's video; the clips after it close up (or make room), gaps further on kept.
+        var gapAfter = s2.Move(c, 7, 7.5); // [0,3)@0 [3,6)@3 [6,10)@7, a 1 s gap before the last
+        var shorter = gapAfter.Trim(b, 3.5, 5.5);
+        H.Check(Math.Abs(shorter.Find(b)!.In - 3.5) < 1e-9 && Math.Abs(shorter.Find(b)!.Out - 5.5) < 1e-9 && shorter.Find(b)!.Start == 3
+            && Math.Abs(shorter.Find(c)!.Start - 6) < 1e-9 && Math.Abs(shorter.End - 10) < 1e-9, $"trim shorter: the clips after it close up, the gap kept: {Show(shorter)}");
+        var longer = s2.Trim(b, 2, 7);
+        H.Check(Math.Abs(longer.Find(c)!.Start - 8) < 1e-9 && !longer.Clips.Zip(longer.Clips.Skip(1)).Any(p => p.Second.Start < p.First.End - 1e-9),
+            $"trim longer: the clips after it make room: {Show(longer)}");
+        var first = tl.Trim(tl.Clips[0].Id, 5, 8);
+        H.Check(first.Clips[0].Start == 0 && Math.Abs(first.End - 3) < 1e-9 && ReferenceEquals(first.Trim(first.Clips[0].Id, 5, 8), first),
+            $"trimming the only clip keeps it at 0 (as the old trim did): {Show(first)}");
+        H.Check(Math.Abs(tl.Trim(tl.Clips[0].Id, 9.99, 50).Clips[0].Out - tl.SourceEnd) < 1e-9 && tl.Trim(tl.Clips[0].Id, 4, 4).Clips[0].Length >= fd - 1e-9,
+            "a trim stays in the file and keeps at least a frame");
+
         static bool Overlap(Timeline t) => t.Music.Zip(t.Music.Skip(1)).Any(p => p.Second.Start < p.First.End - 1e-6);
     }
 

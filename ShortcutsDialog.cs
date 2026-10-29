@@ -43,11 +43,19 @@ sealed class ShortcutsDialog : PagedWindow
             ("Click a clip", "Select it"),
             ("Delete", "Delete it, leaving a gap"),
             ("Shift + Delete", "Delete it and close the gap"),
-            ("Drag a clip", "Move it (onto others: rearrange)"),
+            ("Drag a clip", "Move it, or rearrange"),
             ("Drag a clip's top corner", "Fade in / out"),
             ("Click the dot between clips", "Transition"),
-            ("Right-click a clip", "Fades, delete"),
+            ("Right-click a clip", "Fades, trim, delete"),
             ("Ctrl + Z / Ctrl + Y", "Undo / redo"),
+        }),
+        ("TRIM", new[]
+        {
+            ("T, double-click a clip", "Trim it"),
+            ("Drag the yellow handles", "Set its start / end"),
+            ("Drag the grip under them", "Slide the part kept"),
+            ("I or [  ·  O or ]", "Start / end here"),
+            ("Enter / Esc", "Keep / cancel"),
         }),
         ("SOUND", new[]
         {

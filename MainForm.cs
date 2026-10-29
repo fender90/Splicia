@@ -14,14 +14,14 @@ sealed partial class MainForm : Form
     enum Hit
     {
         None, Center, Ruler, Track, Clip, ClipFadeIn, ClipFadeOut, Junction, Music, MusicStart, MusicEnd, MusicFadeIn, MusicFadeOut,
-        MusicLane, Play, Prev, Next, Undo, Redo, Split, Delete, AddAudio, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
+        MusicLane, TrimStart, TrimEnd, TrimGrip, Play, Prev, Next, Undo, Redo, Split, Trim, Delete, AddAudio, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
         Export, Pin, Min, Max, Close, Panel /* the panel's background, between its controls */,
     }
-    enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut }
+    enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut, TrimStart, TrimEnd, TrimMove }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete,
+        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete,
         Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
         Hit.CropArea,
     };
@@ -93,7 +93,7 @@ sealed partial class MainForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         ClientSize = new Size(P(1100), P(700));
-        MinimumSize = new Size(P(970), P(600));
+        MinimumSize = new Size(P(1010), P(600));
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         AllowDrop = true;
@@ -322,11 +322,12 @@ sealed partial class MainForm : Form
             Hit.Undo => new Rectangle(left + 3 * step + P(16), rowY, bs, bs),
             Hit.Redo => new Rectangle(left + 4 * step + P(16), rowY, bs, bs),
             Hit.Split => new Rectangle(left + 5 * step + P(32), rowY, bs, bs),
-            Hit.Delete => new Rectangle(left + 6 * step + P(32), rowY, bs, bs),
-            Hit.AddAudio => new Rectangle(left + 7 * step + P(32), rowY, bs, bs),
-            Hit.RotL => new Rectangle(left + 8 * step + P(32), rowY, bs, bs),
-            Hit.RotR => new Rectangle(left + 9 * step + P(32), rowY, bs, bs),
-            Hit.Crop => new Rectangle(left + 10 * step + P(32), rowY, bs, bs),
+            Hit.Trim => new Rectangle(left + 6 * step + P(32), rowY, bs, bs),
+            Hit.Delete => new Rectangle(left + 7 * step + P(32), rowY, bs, bs),
+            Hit.AddAudio => new Rectangle(left + 8 * step + P(32), rowY, bs, bs),
+            Hit.RotL => new Rectangle(left + 9 * step + P(32), rowY, bs, bs),
+            Hit.RotR => new Rectangle(left + 10 * step + P(32), rowY, bs, bs),
+            Hit.Crop => new Rectangle(left + 11 * step + P(32), rowY, bs, bs),
             Hit.Export => new Rectangle(exportX, rowY, ExportW, bs),
             Hit.Pin => new Rectangle(pr.Right - Pad - P(30), pr.Top + P(9), P(30), P(30)),
             Hit.More => new Rectangle(moreX, rowY, bs, bs),
@@ -611,7 +612,7 @@ sealed partial class MainForm : Form
         using var sf = new StringFormat(StringFormatFlags.NoWrap) { Trimming = StringTrimming.EllipsisCharacter };
 
         string title = _info != null ? Path.GetFileName(_info.Path) : "Splicia";
-        string time = _info != null ? $"{Fmt(_pos)} / {Fmt(_tl.End)}" : "";
+        string time = _info != null ? $"{Fmt(_pos)} / {Fmt(PosEnd)}" : "";
         string sub = "No video loaded";
         string sel = "";
         if (_info != null)
@@ -625,6 +626,11 @@ sealed partial class MainForm : Form
             if (_zoom > 1f) sub += $"  ·  zoom {_zoom * 100:0}%";
             int n = _tl.Clips.Count, m = _tl.Music.Count;
             sel = $"{n} clip{(n == 1 ? "" : "s")}{(m > 0 ? $"  ·  {m} sound{(m == 1 ? "" : "s")}" : "")}  ·  {Length(_tl.End)}";
+            if (Trimming)
+            {
+                sub = "Trimming: drag the yellow handles or the grip under them  ·  Enter keeps, Esc cancels";
+                sel = $"Keeping {Length(_trimOut - _trimIn)}  ·  {Fmt(_trimIn)} – {Fmt(_trimOut)}";
+            }
         }
 
         float timeW = g.MeasureString(time, _timeFont).Width, selW = g.MeasureString(sel, _smallFont).Width;
@@ -638,11 +644,12 @@ sealed partial class MainForm : Form
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
-        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More, Hit.Pin })
+        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More, Hit.Pin })
         {
             var r = Rect(h);
             bool enabled = (has || h is Hit.More or Hit.Full or Hit.Pin) && (h != Hit.Delete || _selClip >= 0 || _selMusic >= 0)
-                && (h != Hit.Undo || _undo.Count > 0) && (h != Hit.Redo || _redo.Count > 0);
+                && (h != Hit.Undo || _undo.Count > 0) && (h != Hit.Redo || _redo.Count > 0)
+                && !(Trimming && h is Hit.Undo or Hit.Redo or Hit.Split or Hit.Delete or Hit.AddAudio);
             if (_hover == h && enabled)
                 using (var hb = new SolidBrush(W(34))) g.FillEllipse(hb, r);
             var col = !enabled ? W(70) : h == Hit.Loop && !_loop ? W(110) : W(240);
@@ -655,6 +662,7 @@ sealed partial class MainForm : Form
                 case Hit.Undo: UndoGlyph(g, gr, col, redo: false); break;
                 case Hit.Redo: UndoGlyph(g, gr, col, redo: true); break;
                 case Hit.Split: ScissorsGlyph(g, gr, enabled && _hover == h ? C(255, Theme.VioletHover) : col); break;
+                case Hit.Trim: TrimGlyph(g, gr, Trimming || enabled && _hover == h ? C(255, TrimColor) : col); break;
                 case Hit.Delete: TrashGlyph(g, gr, col); break;
                 case Hit.AddAudio: AddSoundGlyph(g, gr, enabled && _hover == h ? C(255, AudioColor) : col); break;
                 case Hit.RotL: RotateGlyph(g, gr, col, clockwise: false); break;
@@ -742,6 +750,10 @@ sealed partial class MainForm : Form
         Hit.Undo => _undo.Count > 0 ? "Undo  (Ctrl+Z)" : "Nothing to undo",
         Hit.Redo => _redo.Count > 0 ? "Redo  (Ctrl+Y)" : "Nothing to redo",
         Hit.Split => "Split the clip at the playhead  (S)",
+        Hit.Trim => Trimming ? "Keep this part  (T or Enter; Esc cancels)" : "Trim the clip: choose the part of it to keep  (T)",
+        Hit.TrimStart => "Drag where the part kept starts  (I or [ at the playhead)",
+        Hit.TrimEnd => "Drag where the part kept ends  (O or ] at the playhead)",
+        Hit.TrimGrip => "Drag to move the part kept along the video",
         Hit.Delete => "Delete the selected clip  (Delete; Shift+Delete closes the gap)",
         Hit.AddAudio => "Add sound: WAV, MP3…  (or drop files on the audio track)",
         Hit.RotL => "Rotate left  (Shift+R)",
@@ -1371,8 +1383,9 @@ sealed partial class MainForm : Form
             _hoverSince = Now;
             _hintVisible = false;
         }
-        Cursor = h is Hit.MusicStart or Hit.MusicEnd or Hit.ClipFadeIn or Hit.ClipFadeOut or Hit.MusicFadeIn or Hit.MusicFadeOut ? Cursors.SizeWE
-            : h is Hit.Clip or Hit.Music ? Cursors.SizeAll
+        Cursor = h is Hit.MusicStart or Hit.MusicEnd or Hit.ClipFadeIn or Hit.ClipFadeOut or Hit.MusicFadeIn or Hit.MusicFadeOut
+                or Hit.TrimStart or Hit.TrimEnd ? Cursors.SizeWE
+            : h is Hit.Clip or Hit.Music or Hit.TrimGrip ? Cursors.SizeAll
             : h == Hit.CropArea ? CropCursor(CropPartAt(e.Location)) : h == Hit.CropBar && item == int.MinValue ? Cursors.Default
             : h != Hit.None ? Cursors.Hand : _zoom > 1f && !onPanel ? Cursors.SizeAll : Cursors.Default;
     }
@@ -1408,6 +1421,7 @@ sealed partial class MainForm : Form
             return;
         }
         if (h == Hit.CropBar) _pressedItem = CropItemAt(e.Location);
+        if (h == Hit.Clip && e.Clicks == 2) { StartTrim(_hitId); return; }
         if (_info != null && IsTimelineHit(h) && h != Hit.Junction)
         {
             TimelineDown(h, e);
@@ -1493,6 +1507,7 @@ sealed partial class MainForm : Form
             case Hit.Undo: Undo(); break;
             case Hit.Redo: Redo(); break;
             case Hit.Split: SplitHere(); break;
+            case Hit.Trim: StartTrim(); break;
             case Hit.Delete: DeleteSelected(close: (ModifierKeys & Keys.Shift) != 0); break;
             case Hit.AddAudio: AddAudioDialog(); break;
             case Hit.None: if (_info != null && !_cropping) TogglePlay(); break;
@@ -1578,6 +1593,11 @@ sealed partial class MainForm : Form
         switch (keyData)
         {
             case Keys.C: ToggleCrop(); return true;
+            case Keys.T: StartTrim(); return true;
+            case Keys.Enter when Trimming: FinishTrim(keep: true); return true;
+            case Keys.Escape when Trimming: FinishTrim(keep: false); return true;
+            case Keys.I: case Keys.OemOpenBrackets: TrimAtPlayhead(start: true); return true;
+            case Keys.O: case Keys.OemCloseBrackets: TrimAtPlayhead(start: false); return true;
             case Keys.Enter when _cropping: FinishCrop(apply: true); return true;
             case Keys.Escape when _cropping: FinishCrop(apply: false); return true;
             case Keys.S: SplitHere(); return true;
@@ -1592,8 +1612,8 @@ sealed partial class MainForm : Form
             case Keys.Shift | Keys.Right: Jump(+1); return true;
             case Keys.Control | Keys.Left: case Keys.PageUp: Jump(-10); return true;
             case Keys.Control | Keys.Right: case Keys.PageDown: Jump(+10); return true;
-            case Keys.Home: GoTo(0); return true;
-            case Keys.End: GoTo(_tl.End - FrameDur); return true;
+            case Keys.Home: GoTo(Trimming ? _trimIn : 0); return true;
+            case Keys.End: GoTo((Trimming ? _trimOut : _tl.End) - FrameDur); return true;
             case Keys.R: Rotate(+90); return true;
             case Keys.Shift | Keys.R: Rotate(-90); return true;
             case Keys.Up: SetVolume((_muted ? 0 : _volume) + 0.05f); return true;
@@ -1627,14 +1647,16 @@ sealed partial class MainForm : Form
         ToolStripMenuItem Item(string text, Action a, string? keys = null, bool enabled = true) =>
             new(text, null, (_, _) => a()) { ShortcutKeyDisplayString = keys, Enabled = enabled };
         _menu.Items.Add(Item("Open video…", OpenDialog, "Ctrl+O"));
-        _menu.Items.Add(Item("Add sound…", AddAudioDialog, null, has));
+        bool edit = has && !Trimming; // timeline edits wait for the trim to be kept or cancelled
+        _menu.Items.Add(Item("Add sound…", AddAudioDialog, null, edit));
         _menu.Items.Add(Item("Export…", Export, "Ctrl+E", has));
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(Item("Undo", Undo, "Ctrl+Z", _undo.Count > 0));
-        _menu.Items.Add(Item("Redo", Redo, "Ctrl+Y", _redo.Count > 0));
-        _menu.Items.Add(Item("Split at the playhead", SplitHere, "S", has && _tl.At(_pos) != null));
-        _menu.Items.Add(Item("Close gaps", CloseGaps, null, has && _tl.HasGaps));
-        if (has && _tl.Clips.Count > 0)
+        _menu.Items.Add(Item("Undo", Undo, "Ctrl+Z", !Trimming && _undo.Count > 0));
+        _menu.Items.Add(Item("Redo", Redo, "Ctrl+Y", !Trimming && _redo.Count > 0));
+        _menu.Items.Add(Item("Split at the playhead", SplitHere, "S", edit && _tl.At(_pos) != null));
+        _menu.Items.Add(Item(Trimming ? "Keep the trim" : "Trim the clip…", () => StartTrim(), "T", has));
+        _menu.Items.Add(Item("Close gaps", CloseGaps, null, edit && _tl.HasGaps));
+        if (edit && _tl.Clips.Count > 0)
         {
             var first = _tl.Clips[0];
             var last = _tl.Clips[^1];
@@ -1744,6 +1766,8 @@ sealed partial class MainForm : Form
         _drag = Drag.None;
         _dragBase = null;
         _dragId = -1;
+        _trimClip = -1;
+        _trimView = null;
         _strip?.Dispose();
         _strip = null;
         _videoPeaks?.Dispose();
@@ -1802,6 +1826,7 @@ sealed partial class MainForm : Form
         if (_info == null || _pb == null) return;
         if (_playing) Pause();
         FinishCrop(apply: true);
+        FinishTrim(keep: true);
         if (_tl.End <= 0) { ShowToast("The timeline is empty"); return; }
         var job = CurrentJob();
         RevealCursor();
@@ -1831,10 +1856,10 @@ sealed partial class MainForm : Form
         if (_pb == null || _info == null) return;
         if (_tl.End <= 0) { ShowToast("The timeline is empty"); return; }
         double from = _pos;
-        // At (or right before) the end: start over from the beginning.
-        if (from >= _tl.End - FrameDur * 1.5) from = 0;
+        // Outside what's played (trim mode), or at (or right before) its end: from its start.
+        if (from < PlayBase || from >= PlayEnd - FrameDur * 1.5) from = PlayBase;
         _playing = true;
-        _pb.Play(from, EditList.Of(_tl), _loop);
+        _pb.Play(from - PlayBase, PlayList(), _loop);
         timeBeginPeriod(1);
         _timer.Interval = 4;
         Invalidate();
@@ -1861,7 +1886,7 @@ sealed partial class MainForm : Form
     {
         if (_pb == null) return;
         Pause();
-        _pos = Math.Clamp(_tl.Snap(_pos + delta * FrameDur), 0, Math.Max(0, _tl.End - FrameDur / 2));
+        _pos = Math.Clamp(_tl.Snap(_pos + delta * FrameDur), 0, Math.Max(0, PosEnd - FrameDur / 2));
         ShowFrameAt(_pos);
         Invalidate(PanelRect);
     }
@@ -1875,9 +1900,10 @@ sealed partial class MainForm : Form
     void GoTo(double t)
     {
         if (_pb == null) return;
-        t = Math.Clamp(_tl.Snap(t), 0, Math.Max(0, _tl.End - FrameDur / 2));
+        t = Math.Clamp(_tl.Snap(t), 0, Math.Max(0, PosEnd - FrameDur / 2));
         _pos = t;
-        if (_playing) _pb.Play(t, EditList.Of(_tl), _loop);
+        if (_playing && (t < PlayBase || t >= PlayEnd)) Pause(); // trim mode: outside the part played
+        if (_playing) _pb.Play(t - PlayBase, PlayList(), _loop);
         else ShowFrameAt(t);
         Invalidate(PanelRect);
     }
@@ -1889,8 +1915,8 @@ sealed partial class MainForm : Form
         if (updatePos)
         {
             // Playing frames of later rounds (looping) carry their round's time: back onto the timeline.
-            double len = _tl.End;
-            _pos = _playing && len > 0 ? Math.Max(0, f.Out - Math.Floor((f.Out + 1e-6) / len) * len) : f.Out;
+            double len = PlayEnd - PlayBase;
+            _pos = _playing && len > 0 ? PlayBase + Math.Max(0, f.Out - Math.Floor((f.Out + 1e-6) / len) * len) : f.Out;
         }
         RenderFrame();
     }

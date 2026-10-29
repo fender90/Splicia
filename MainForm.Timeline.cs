@@ -65,7 +65,7 @@ sealed partial class MainForm
     void UpdateView()
     {
         if (_drag != Drag.None) return;
-        _viewLen = _tl.End > 0 ? _tl.End : 1;
+        _viewLen = Trimming ? _tl.SourceEnd : _tl.End > 0 ? _tl.End : 1;
     }
 
     RectangleF ClipRect(Clip c) => new(X(c.Start), VideoRect.Top, Math.Max(1, X(c.End) - X(c.Start)), VideoRect.Height);
@@ -96,6 +96,7 @@ sealed partial class MainForm
     {
         if (!TimelineRect.Contains(p)) return (Hit.None, -1);
         if (p.Y < RulerRect.Bottom + P(1)) return (Hit.Ruler, -1);
+        if (Trimming) return TrimHit(p);
         var video = Rectangle.FromLTRB(VideoRect.Left, VideoRect.Top, VideoRect.Right, WaveRect.Bottom);
         if (p.Y <= video.Bottom + P(3))
         {
@@ -146,7 +147,8 @@ sealed partial class MainForm
     }
 
     static bool IsTimelineHit(Hit h) => h is Hit.Ruler or Hit.Track or Hit.Clip or Hit.ClipFadeIn or Hit.ClipFadeOut or Hit.Junction
-        or Hit.Music or Hit.MusicStart or Hit.MusicEnd or Hit.MusicFadeIn or Hit.MusicFadeOut or Hit.MusicLane;
+        or Hit.Music or Hit.MusicStart or Hit.MusicEnd or Hit.MusicFadeIn or Hit.MusicFadeOut or Hit.MusicLane
+        or Hit.TrimStart or Hit.TrimEnd or Hit.TrimGrip;
 
     // ───────────────────────── drawing ─────────────────────────
 
@@ -157,6 +159,33 @@ sealed partial class MainForm
         var tr = Rectangle.FromLTRB(TrackLeft, VideoRect.Top, TrackLeft + TrackWidth, MusicRect.Bottom);
         UpdateTracks(tr);
         if (_tracks != null) DrawFaded(g, _tracks, tr);
+        if (Trimming) DrawTrim(g); else DrawClipOverlays(g);
+
+        // Playhead
+        {
+            float x = X(_pos), top = RulerRect.Top, bottom = MusicRect.Bottom + P(3);
+            using (var shadow = new Pen(C(90, 0, 0, 0), P(4))) g.DrawLine(shadow, x, top, x, bottom);
+            using (var pen = new Pen(W(255), P(2))) g.DrawLine(pen, x, top, x, bottom);
+            using var knob = new SolidBrush(W(255));
+            g.FillPolygon(knob, new[] { new PointF(x - P(6), top), new PointF(x + P(6), top), new PointF(x, top + P(8)) });
+        }
+
+        if (_drag == Drag.Seek)
+        {
+            string label = Fmt(_pos);
+            var size = g.MeasureString(label, _timeFont);
+            var r = new RectangleF(X(_pos) - size.Width / 2 - P(9), RulerRect.Top - P(10) - size.Height - P(6), size.Width + P(18), size.Height + P(6));
+            r.X = Math.Clamp(r.X, PanelRect.Left + P(6), PanelRect.Right - P(6) - r.Width);
+            using (var path = RoundRect(r, r.Height / 2))
+            using (var b = new SolidBrush(C(235, 245, 246, 250))) g.FillPath(b, path);
+            using var tb = new SolidBrush(C(255, 20, 20, 24));
+            g.DrawString(label, _timeFont, tb, r.X + P(9), r.Y + P(3));
+        }
+    }
+
+    /// <summary>Fades, the selection, handles, transition dots, the audio track's hint, and a clip being dragged.</summary>
+    void DrawClipOverlays(Graphics g)
+    {
         bool movingClip = _drag == Drag.ClipMove && _moved, movingMusic = _drag == Drag.MusicMove && _moved;
 
         // Fades, selection, handles
@@ -229,27 +258,6 @@ sealed partial class MainForm
             Outline(g, to, Color.White);
         }
         g.Restore(clipState);
-
-        // Playhead
-        {
-            float x = X(_pos), top = RulerRect.Top, bottom = MusicRect.Bottom + P(3);
-            using (var shadow = new Pen(C(90, 0, 0, 0), P(4))) g.DrawLine(shadow, x, top, x, bottom);
-            using (var pen = new Pen(W(255), P(2))) g.DrawLine(pen, x, top, x, bottom);
-            using var knob = new SolidBrush(W(255));
-            g.FillPolygon(knob, new[] { new PointF(x - P(6), top), new PointF(x + P(6), top), new PointF(x, top + P(8)) });
-        }
-
-        if (_drag == Drag.Seek)
-        {
-            string label = Fmt(_pos);
-            var size = g.MeasureString(label, _timeFont);
-            var r = new RectangleF(X(_pos) - size.Width / 2 - P(9), RulerRect.Top - P(10) - size.Height - P(6), size.Width + P(18), size.Height + P(6));
-            r.X = Math.Clamp(r.X, PanelRect.Left + P(6), PanelRect.Right - P(6) - r.Width);
-            using (var path = RoundRect(r, r.Height / 2))
-            using (var b = new SolidBrush(C(235, 245, 246, 250))) g.FillPath(b, path);
-            using var tb = new SolidBrush(C(255, 20, 20, 24));
-            g.DrawString(label, _timeFont, tb, r.X + P(9), r.Y + P(3));
-        }
     }
 
     void Outline(Graphics g, RectangleF r, Color c)
@@ -322,6 +330,7 @@ sealed partial class MainForm
             }
         }
         // The end of the timeline
+        if (Trimming) return;
         using var end = new Pen(C(140, Theme.AccentHover), 1);
         g.DrawLine(end, X(_tl.End), rr.Top, X(_tl.End), MusicRect.Bottom);
     }
@@ -330,7 +339,8 @@ sealed partial class MainForm
     void UpdateTracks(Rectangle tr)
     {
         if (_info == null || tr.Width <= 0) return;
-        var key = (_tlVersion, _stripVersion, _peaksVersion, EffectiveRotation, tr.Width, tr.Height, _viewLen);
+        var shown = _trimView ?? _tl;
+        var key = (Trimming ? -1 - _tlVersion : _tlVersion, _stripVersion, _peaksVersion, EffectiveRotation, tr.Width, tr.Height, _viewLen);
         if (_tracks != null && key == _tracksKey) return;
         _tracksKey = key;
         if (_tracks == null || _tracks.Width != tr.Width || _tracks.Height != tr.Height)
@@ -355,7 +365,7 @@ sealed partial class MainForm
         var (dw, dh) = _info.DisplaySize(_rot);
         float tileW = Math.Max(P(14), VideoRect.Height * (float)dw / Math.Max(1, dh));
         int rot = EffectiveRotation;
-        foreach (var c in _tl.Clips)
+        foreach (var c in shown.Clips)
         {
             var r = ClipRect(c);
             var whole = RectangleF.FromLTRB(r.Left, VideoRect.Top, r.Right, WaveRect.Bottom);
@@ -380,7 +390,7 @@ sealed partial class MainForm
         }
 
         using var nameFont = new Font("Segoe UI Semibold", 8f);
-        foreach (var m in _tl.Music)
+        foreach (var m in shown.Music)
         {
             var r = MusicRectOf(m);
             using var path = RoundRect(r, P(5));
@@ -492,6 +502,7 @@ sealed partial class MainForm
     void Edit(Timeline next, string? toast = null)
     {
         if (ReferenceEquals(next, _tl)) return;
+        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
         if (next.SameAs(_tl)) { _tlVersion++; UpdateView(); Invalidate(); return; }
         _undo.Push(_tl);
         _redo.Clear();
@@ -503,6 +514,7 @@ sealed partial class MainForm
     void Undo()
     {
         if (_info == null || _drag != Drag.None) return;
+        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
         if (_undo.Count == 0) { ShowToast("Nothing to undo"); return; }
         _redo.Push(_tl);
         _tl = _undo.Pop();
@@ -513,6 +525,7 @@ sealed partial class MainForm
     void Redo()
     {
         if (_info == null || _drag != Drag.None) return;
+        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
         if (_redo.Count == 0) { ShowToast("Nothing to redo"); return; }
         _undo.Push(_tl);
         _tl = _redo.Pop();
@@ -537,6 +550,7 @@ sealed partial class MainForm
     void SplitHere()
     {
         if (_info == null || _drag != Drag.None) return;
+        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
         if (_playing) Pause();
         var next = _tl.Split(_pos, out int second);
         if (second < 0) { ShowToast(_tl.At(_pos) == null ? "No clip under the playhead" : "Already a cut here"); return; }
@@ -562,6 +576,7 @@ sealed partial class MainForm
     void AddAudioDialog()
     {
         if (_info == null || _drag != Drag.None) return;
+        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
         RevealCursor();
         using var dlg = new OpenFileDialog { Filter = SoundFilter, Title = "Add sound", Multiselect = true };
         if (dlg.ShowDialog(this) == DialogResult.OK) AddAudio(dlg.FileNames, _pos);
@@ -572,6 +587,7 @@ sealed partial class MainForm
     {
         if (_info == null) { ShowToast("Open a video first"); return; }
         if (_drag != Drag.None) return;
+        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
         var next = _tl;
         int added = 0, last = -1;
         foreach (var path in paths)
@@ -659,7 +675,7 @@ sealed partial class MainForm
         switch (h)
         {
             case Hit.Ruler or Hit.Track or Hit.MusicLane:
-                if (h != Hit.Ruler) { _selClip = _selMusic = -1; }
+                if (h != Hit.Ruler && !Trimming) { _selClip = _selMusic = -1; }
                 _drag = Drag.Seek;
                 ScrubTo(e.X, exact: false);
                 break;
@@ -688,6 +704,18 @@ sealed partial class MainForm
             case Hit.ClipFadeOut or Hit.MusicFadeOut:
                 _drag = Drag.FadeOut;
                 break;
+            case Hit.TrimStart:
+                _trimGrab = TimeAt(e.X) - _trimIn;
+                _drag = Drag.TrimStart;
+                break;
+            case Hit.TrimEnd:
+                _trimGrab = TimeAt(e.X) - _trimOut;
+                _drag = Drag.TrimEnd;
+                break;
+            case Hit.TrimGrip:
+                _trimGrab = TimeAt(e.X) - _trimIn;
+                _drag = Drag.TrimMove;
+                break;
         }
         _dragMusic = h is Hit.Music or Hit.MusicStart or Hit.MusicEnd or Hit.MusicFadeIn or Hit.MusicFadeOut;
         Capture = true;
@@ -698,7 +726,7 @@ sealed partial class MainForm
 
     void ScrubTo(int x, bool exact)
     {
-        _pos = Math.Clamp(_tl.Snap(TimeAt(x)), 0, Math.Max(0, _tl.End - FrameDur / 2));
+        _pos = Math.Clamp(_tl.Snap(TimeAt(x)), 0, Math.Max(0, PosEnd - FrameDur / 2));
         ShowFrameAt(_pos, exact);
     }
 
@@ -706,7 +734,7 @@ sealed partial class MainForm
     void TimelineDrag(int x)
     {
         _dragX = x;
-        if (!_moved && Math.Abs(x - _downX) < SystemInformation.DragSize.Width && _drag is Drag.ClipMove or Drag.MusicMove) return;
+        if (!_moved && Math.Abs(x - _downX) < SystemInformation.DragSize.Width && _drag is Drag.ClipMove or Drag.MusicMove or Drag.TrimStart or Drag.TrimEnd or Drag.TrimMove) return;
         _moved = true;
         var b = _dragBase ?? _tl;
         // Moves, and a sound's end, may go past the end of the timeline: the pointer isn't held to the track there.
@@ -721,6 +749,9 @@ sealed partial class MainForm
                 break;
             case Drag.MusicMove when b.FindMusic(_dragId) is AudioClip m:
                 _ghost = SnapMove(Math.Max(0, t - _grab), m.Length, m.Id, music: true);
+                break;
+            case Drag.TrimStart or Drag.TrimEnd or Drag.TrimMove:
+                DragTrim(t);
                 break;
             case Drag.MusicStart:
                 _tl = b.TrimMusicStart(_dragId, t);
@@ -755,6 +786,9 @@ sealed partial class MainForm
         switch (d)
         {
             case Drag.Seek:
+                ShowFrameAt(_pos, exact: true);
+                break;
+            case Drag.TrimStart or Drag.TrimEnd or Drag.TrimMove:
                 ShowFrameAt(_pos, exact: true);
                 break;
             case Drag.ClipMove or Drag.MusicMove when !_moved:
@@ -825,6 +859,7 @@ sealed partial class MainForm
         _clipMenu.Items.Add(new ToolStripMenuItem($"Clip {Fmt(c.In)} – {Fmt(c.Out)}  ({Length(c.Length)})") { Enabled = false });
         _clipMenu.Items.Add(new ToolStripSeparator());
         _clipMenu.Items.Add(MenuItem("Split at the playhead", SplitHere, _tl.At(_pos)?.Id == id, "S"));
+        _clipMenu.Items.Add(MenuItem("Trim…", () => StartTrim(id), true, "T"));
         _clipMenu.Items.Add(FadeMenu("Fade in", c.FadeIn, VideoFades, v => SetClipFades(id, v, null)));
         _clipMenu.Items.Add(FadeMenu("Fade out", c.FadeOut, VideoFades, v => SetClipFades(id, null, v)));
         _clipMenu.Items.Add(new ToolStripSeparator());
@@ -877,6 +912,11 @@ sealed partial class MainForm
     void ShowFrameAt(double t, bool exact = true)
     {
         if (_pb == null) return;
+        if (Trimming)
+        {
+            if (exact) _pb.ShowAt(t, 0); else _pb.ShowNear(t, 0);
+            return;
+        }
         if (_tl.At(t) is Clip c)
         {
             double source = c.In + (t - c.Start);

@@ -12,6 +12,7 @@ Requires Windows 10 or 11 (64-bit). See [CHANGELOG.md](CHANGELOG.md) for what's 
 
 - Opens the common video formats, including iPhone .mov (HEVC, HDR), .mp4, .mkv, .webm and .avi
 - A timeline of clips: split at the playhead, delete (leaving a gap or closing it), drag clips to move or rearrange them; undo and redo
+- Trim a clip: choose the part to keep with yellow handles, or slide a part of the same length along its video
 - Transitions where clips meet: a straight cut, a crossfade or a fade through black
 - Fade in and out on any clip, video or sound
 - An audio track: drop WAV or MP3 files on it, move them, trim their ends

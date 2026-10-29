@@ -2,6 +2,12 @@
 
 All notable changes to Splicia are listed here.
 
+## [1.0.7] - 2026-10-29
+
+### What's new
+
+- **Trim is back.** Press T (or the trim button, or double-click a clip) to trim a clip: the timeline shows its whole video, with the part kept framed in yellow. Drag the yellow handles to set where it starts and ends, or the grip under them to move a part of the same length along the video. I and O (or [ and ]) set the start and end at the playhead, and Space plays just that part. Enter keeps it, and the clips after it close up; Esc cancels.
+
 ## [1.0.6] - 2026-10-27
 
 ### What's new
@@ -28,5 +34,6 @@ All notable changes to Splicia are listed here.
 
 - Several bug fixes.
 
+[1.0.7]: https://github.com/fender90/Splicia/releases/tag/v1.0.7
 [1.0.6]: https://github.com/fender90/Splicia/releases/tag/v1.0.6
 [1.0.5]: https://github.com/fender90/Splicia/releases/tag/v1.0.5
