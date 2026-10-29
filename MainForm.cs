@@ -15,13 +15,13 @@ sealed partial class MainForm : Form
     {
         None, Center, Ruler, Track, Clip, ClipFadeIn, ClipFadeOut, Junction, Music, MusicStart, MusicEnd, MusicFadeIn, MusicFadeOut,
         MusicLane, TrimStart, TrimEnd, TrimGrip, Play, Prev, Next, Undo, Redo, Split, Trim, Delete, AddAudio, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
-        Export, Pin, Min, Max, Close, Panel /* the panel's background, between its controls */,
+        Export, Pin, Min, Max, Close, TrimApply, TrimCancel, Panel /* the panel's background, between its controls */,
     }
     enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut, TrimStart, TrimEnd, TrimMove }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete,
+        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.TrimApply, Hit.TrimCancel, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete,
         Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
         Hit.CropArea,
     };
@@ -329,7 +329,9 @@ sealed partial class MainForm : Form
             Hit.RotR => new Rectangle(left + 10 * step + P(32), rowY, bs, bs),
             Hit.Crop => new Rectangle(left + 11 * step + P(32), rowY, bs, bs),
             Hit.Export => new Rectangle(exportX, rowY, ExportW, bs),
-            Hit.Pin => new Rectangle(pr.Right - Pad - P(30), pr.Top + P(9), P(30), P(30)),
+            Hit.Pin => new Rectangle(pr.Right - Pad - P(30), pr.Top + P(8), P(30), P(28)),
+            Hit.TrimApply => TrimButtonRect(apply: true),
+            Hit.TrimCancel => TrimButtonRect(apply: false),
             Hit.More => new Rectangle(moreX, rowY, bs, bs),
             Hit.Full => new Rectangle(moreX - step, rowY, bs, bs),
             Hit.Loop => new Rectangle(moreX - 2 * step, rowY, bs, bs),
@@ -628,12 +630,13 @@ sealed partial class MainForm : Form
             sel = $"{n} clip{(n == 1 ? "" : "s")}{(m > 0 ? $"  ·  {m} sound{(m == 1 ? "" : "s")}" : "")}  ·  {Length(_tl.End)}";
             if (Trimming)
             {
-                sub = "Trimming: drag the yellow handles or the grip under them  ·  Enter keeps, Esc cancels";
-                sel = $"Keeping {Length(_trimOut - _trimIn)}  ·  {Fmt(_trimIn)} – {Fmt(_trimOut)}";
+                sub = "Trim: drag the yellow handles, or the grip on the ruler to slide the selection";
+                sel = "";
             }
         }
 
         float timeW = g.MeasureString(time, _timeFont).Width, selW = g.MeasureString(sel, _smallFont).Width;
+        if (Trimming) selW = pr.Right - Pad - TrimButtonRect(apply: false).Left; // the Apply and Cancel buttons are there
         float pinW = P(40); // the pin button at the top right
         g.DrawString(title, _titleFont, titleBrush, new RectangleF(pr.Left + Pad, pr.Top + P(14), pr.Width - 2 * Pad - timeW - pinW - P(16), P(26)), sf);
         g.DrawString(time, _timeFont, titleBrush, pr.Right - Pad - pinW - timeW, pr.Top + P(16));
@@ -641,6 +644,7 @@ sealed partial class MainForm : Form
         using (var selBrush = new SolidBrush(C(230, Theme.AccentHover))) g.DrawString(sel, _smallFont, selBrush, pr.Right - Pad - selW, pr.Top + P(41));
 
         DrawTimeline(g);
+        if (Trimming) DrawTrimButtons(g);
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
@@ -750,10 +754,12 @@ sealed partial class MainForm : Form
         Hit.Undo => _undo.Count > 0 ? "Undo  (Ctrl+Z)" : "Nothing to undo",
         Hit.Redo => _redo.Count > 0 ? "Redo  (Ctrl+Y)" : "Nothing to redo",
         Hit.Split => "Split the clip at the playhead  (S)",
-        Hit.Trim => Trimming ? "Keep this part  (T or Enter; Esc cancels)" : "Trim the clip: choose the part of it to keep  (T)",
-        Hit.TrimStart => "Drag where the part kept starts  (I or [ at the playhead)",
-        Hit.TrimEnd => "Drag where the part kept ends  (O or ] at the playhead)",
-        Hit.TrimGrip => "Drag to move the part kept along the video",
+        Hit.Trim => Trimming ? "Apply the trim  (T or Enter; Esc cancels)" : "Trim: keep only a part of the timeline  (T)",
+        Hit.TrimStart => "Drag where the selection starts  (I or [ at the playhead)",
+        Hit.TrimEnd => "Drag where the selection ends  (O or ] at the playhead)",
+        Hit.TrimGrip => "Drag to slide the selection along the timeline",
+        Hit.TrimApply => "Keep only the selection and carry on editing  (Enter)",
+        Hit.TrimCancel => "Leave the timeline as it was  (Esc)",
         Hit.Delete => "Delete the selected clip  (Delete; Shift+Delete closes the gap)",
         Hit.AddAudio => "Add sound: WAV, MP3…  (or drop files on the audio track)",
         Hit.RotL => "Rotate left  (Shift+R)",
@@ -1508,6 +1514,8 @@ sealed partial class MainForm : Form
             case Hit.Redo: Redo(); break;
             case Hit.Split: SplitHere(); break;
             case Hit.Trim: StartTrim(); break;
+            case Hit.TrimApply: FinishTrim(keep: true); break;
+            case Hit.TrimCancel: FinishTrim(keep: false); break;
             case Hit.Delete: DeleteSelected(close: (ModifierKeys & Keys.Shift) != 0); break;
             case Hit.AddAudio: AddAudioDialog(); break;
             case Hit.None: if (_info != null && !_cropping) TogglePlay(); break;
@@ -1654,7 +1662,8 @@ sealed partial class MainForm : Form
         _menu.Items.Add(Item("Undo", Undo, "Ctrl+Z", !Trimming && _undo.Count > 0));
         _menu.Items.Add(Item("Redo", Redo, "Ctrl+Y", !Trimming && _redo.Count > 0));
         _menu.Items.Add(Item("Split at the playhead", SplitHere, "S", edit && _tl.At(_pos) != null));
-        _menu.Items.Add(Item(Trimming ? "Keep the trim" : "Trim the clip…", () => StartTrim(), "T", has));
+        _menu.Items.Add(Item(Trimming ? "Apply the trim" : "Trim…", () => StartTrim(), "T", has));
+        if (Trimming) _menu.Items.Add(Item("Cancel the trim", () => FinishTrim(keep: false), "Esc"));
         _menu.Items.Add(Item("Close gaps", CloseGaps, null, edit && _tl.HasGaps));
         if (edit && _tl.Clips.Count > 0)
         {
@@ -1766,8 +1775,7 @@ sealed partial class MainForm : Form
         _drag = Drag.None;
         _dragBase = null;
         _dragId = -1;
-        _trimClip = -1;
-        _trimView = null;
+        _trimming = false;
         _strip?.Dispose();
         _strip = null;
         _videoPeaks?.Dispose();
@@ -1826,9 +1834,10 @@ sealed partial class MainForm : Form
         if (_info == null || _pb == null) return;
         if (_playing) Pause();
         FinishCrop(apply: true);
-        FinishTrim(keep: true);
-        if (_tl.End <= 0) { ShowToast("The timeline is empty"); return; }
-        var job = CurrentJob();
+        // While trimming, just the selection, as applying it would leave the timeline; the trim stays to apply or cancel.
+        var tl = Trimming ? Kept() : _tl;
+        if (tl.End <= 0) { ShowToast(Trimming ? "Nothing in the selection" : "The timeline is empty"); return; }
+        var job = CurrentJob(tl);
         RevealCursor();
         using var dlg = new ExportDialog(job);
         dlg.ShowDialog(this);
@@ -1855,6 +1864,7 @@ sealed partial class MainForm : Form
     {
         if (_pb == null || _info == null) return;
         if (_tl.End <= 0) { ShowToast("The timeline is empty"); return; }
+        if (PlayEnd - PlayBase < FrameDur / 2) { ShowToast("Nothing in the selection"); return; }
         double from = _pos;
         // Outside what's played (trim mode), or at (or right before) its end: from its start.
         if (from < PlayBase || from >= PlayEnd - FrameDur * 1.5) from = PlayBase;

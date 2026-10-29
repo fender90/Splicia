@@ -91,24 +91,44 @@ sealed class Timeline
     /// <summary>A time on the frame grid.</summary>
     public double Snap(double t) => Math.Max(0, Math.Round(t / Frame) * Frame);
 
-    /// <summary>The end of the file on the frame grid: as far as a clip can reach (see <see cref="Whole"/>).</summary>
-    public double SourceEnd => Math.Max(Frame, Math.Round(SourceLength / Frame) * Frame);
-
     /// <summary>
-    /// Keeps [<paramref name="from"/>, <paramref name="to"/>) of the file in clip <paramref name="id"/> (trim): it stays
-    /// where it starts, and the clips after it move by the change in its length, closing up (or making room) with any gaps
-    /// further on kept. Its fades are held to its new length.
+    /// Only [<paramref name="from"/>, <paramref name="to"/>) of the timeline, moved to start at 0 (trim): the clips and
+    /// sounds in it kept, those across its ends cut there (a fade on an end that's cut is dropped, and so is a transition
+    /// into what's cut away), everything else gone.
     /// </summary>
-    public Timeline Trim(int id, double from, double to)
+    public Timeline Keep(double from, double to)
     {
-        var c = Find(id);
-        if (c == null) return this;
-        from = Math.Clamp(Snap(from), 0, SourceEnd - Frame);
-        to = Math.Clamp(Snap(to), from + Frame, SourceEnd);
-        if (Math.Abs(from - c.In) < 1e-9 && Math.Abs(to - c.Out) < 1e-9) return this;
-        double length = to - from, delta = length - c.Length, fadeIn = Math.Min(c.FadeIn, length);
-        var trimmed = c with { In = from, Out = to, FadeIn = fadeIn, FadeOut = Math.Min(c.FadeOut, length - fadeIn) };
-        return With(Clips.Select(x => x.Id == id ? trimmed : x.Start >= c.End - Frame / 2 ? x with { Start = Snap(x.Start + delta) } : x));
+        from = Math.Max(0, from);
+        to = Math.Min(to, End);
+        if (to - from < Frame / 2) return this;
+        var clips = new List<Clip>();
+        foreach (var c in Clips)
+        {
+            double s = Math.Max(c.Start, from), e = Math.Min(c.End, to);
+            if (e - s < Frame / 2) continue;
+            bool cutIn = s > c.Start + 1e-9, cutOut = e < c.End - 1e-9;
+            double length = e - s, fadeIn = cutIn ? 0 : Math.Min(c.FadeIn, length), fadeOut = cutOut ? 0 : Math.Min(c.FadeOut, length - fadeIn);
+            clips.Add(c with
+            {
+                // Ends that aren't cut stay exactly as they were (no rounding creeping in from start + length).
+                In = cutIn ? c.In + (s - c.Start) : c.In, Out = cutOut ? c.In + (e - c.Start) : c.Out, Start = cutIn ? s - from : c.Start - from,
+                FadeIn = fadeIn, FadeOut = fadeOut, Next = cutOut ? Transition.Cut : c.Next,
+            });
+        }
+        var music = new List<AudioClip>();
+        foreach (var m in Music)
+        {
+            double s = Math.Max(m.Start, from), e = Math.Min(m.End, to);
+            bool cutIn = s > m.Start + 1e-9, cutOut = e < m.End - 1e-9;
+            if (e - s < Frame / 2 || (cutIn || cutOut) && e - s < MinAudio) continue;
+            double length = e - s, fadeIn = cutIn ? 0 : Math.Min(m.FadeIn, length), fadeOut = cutOut ? 0 : Math.Min(m.FadeOut, length - fadeIn);
+            music.Add(m with
+            {
+                In = cutIn ? m.In + (s - m.Start) : m.In, Out = cutOut ? m.In + (e - m.Start) : m.Out, Start = cutIn ? s - from : m.Start - from,
+                FadeIn = fadeIn, FadeOut = fadeOut,
+            });
+        }
+        return new Timeline(clips, music, Frame, SourceLength);
     }
 
     public Clip? Find(int id) => Clips.FirstOrDefault(c => c.Id == id);
@@ -384,9 +404,9 @@ sealed class EditList
         return new EditList(parts, music, tl.End, fd);
     }
 
-    /// <summary>A plain stretch of the file as one part from timeline time 0 (with <paramref name="declick"/>, its sound eased in and out).</summary>
-    public static EditList Single(double from, double to, bool declick = false) =>
-        new(new List<Part> { new(from, to, 0, 0, 0, 0, 0, declick, declick) }, new List<Sound>(), to - from, 1 / 30.0);
+    /// <summary>A plain stretch of the file as one part from timeline time 0.</summary>
+    public static EditList Single(double from, double to) =>
+        new(new List<Part> { new(from, to, 0, 0, 0, 0, 0, false, false) }, new List<Sound>(), to - from, 1 / 30.0);
 
     /// <summary>
     /// The first part still playing at timeline time <paramref name="t"/> (the outgoing one inside a crossfade; in a gap,

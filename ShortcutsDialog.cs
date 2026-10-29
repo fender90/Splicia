@@ -51,11 +51,11 @@ sealed class ShortcutsDialog : PagedWindow
         }),
         ("TRIM", new[]
         {
-            ("T, double-click a clip", "Trim it"),
-            ("Drag the yellow handles", "Set its start / end"),
-            ("Drag the grip under them", "Slide the part kept"),
+            ("T, double-click a clip", "Trim (that clip's stretch)"),
+            ("Drag the yellow handles", "Set the start / end"),
+            ("Drag the grip on the ruler", "Slide the selection"),
             ("I or [  ·  O or ]", "Start / end here"),
-            ("Enter / Esc", "Keep / cancel"),
+            ("Enter / Esc", "Apply / cancel"),
         }),
         ("SOUND", new[]
         {

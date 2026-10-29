@@ -131,8 +131,8 @@ static class TimelineUiTests
             while (((System.Collections.ICollection)Get(form, "_undo")!).Count > 0) Key(form, Keys.Control | Keys.Z);
         }
 
-        // Trim, as earlier versions did, on the clip: T shows its whole video; the yellow handles to 3–6 s; the grip moves the
-        // part kept to 5–8 s; playing plays just that; Enter keeps it (3 s, from 0). Then I and O at the playhead; Esc cancels.
+        // Trim, as earlier versions did, on the one clip: T; the yellow handles to 3–6 s; the grip (on the ruler) slides the
+        // selection to 5–8 s; playing plays just that; Enter applies it (3 s, from 0). Then I and O at the playhead; Esc cancels.
         {
             var vr0 = R(form, "VideoRect");
             float y = vr0.Top + vr0.Height / 2f;
@@ -141,7 +141,7 @@ static class TimelineUiTests
             bool Trimming() => (bool)Get(form, "Trimming")!;
             var trimUndo = (System.Collections.ICollection)Get(form, "_undo")!;
             Key(form, Keys.T);
-            H.Check(Trimming() && Math.Abs((double)Get(form, "_viewLen")! - 10) < 1e-6, "T trims the clip, showing its whole video");
+            H.Check(Trimming() && Math.Abs((double)Get(form, "_viewLen")! - 10) < 1e-6, "T starts trimming: a selection over the clip");
             Drag(form, new PointF(X(form, 0) + 2, y), new PointF(X(form, 3) + 2, y));
             Drag(form, new PointF(X(form, 10) - 2, y), new PointF(X(form, 6) - 2, y));
             H.Check(Math.Abs(In() - 3) < 0.05 && Math.Abs(Out() - 6) < 0.05, $"the yellow handles: keeping {In():0.###}–{Out():0.###}");
@@ -195,6 +195,37 @@ static class TimelineUiTests
         H.Check(afterUndo == 2 && ReferenceEquals(Tl(form), tl), $"the undo button takes the second split back ({afterUndo} clips), redo puts it back ({Tl(form).Clips.Count})");
         Click(form, Centre(Button(form, "Redo")));
         H.Check(ReferenceEquals(Tl(form), tl) && (string?)Get(form, "_toast") == "Nothing to redo", $"redo with nothing to redo changes nothing and says so ({Get(form, "_toast")})");
+
+        // Trim across clips: the selection 2–7 s over all three (I and O); Apply trim keeps 2–3, 3–6 and 6–7 from 0, one undo
+        // step. Then T and Cancel: nothing changes.
+        {
+            var trimUndo = (System.Collections.ICollection)Get(form, "_undo")!;
+            Call(form, "GoTo", 2.0); Pump(0.2);
+            Key(form, Keys.I);
+            Call(form, "GoTo", 7.0 - fd); Pump(0.2);
+            Key(form, Keys.O);
+            Pump(0.2);
+            Snap(form, "t2_trim_across");
+            int trimSteps = trimUndo.Count;
+            // A click on the grip (no drag) moves the playhead there; the selection stays. C waits; the export is the selection.
+            var gripAt = new PointF(X(form, 4), R(form, "RulerRect").Top + R(form, "RulerRect").Height / 2f);
+            Click(form, gripAt);
+            Pump(0.2);
+            H.Check(Math.Abs(Pos(form) - 4) < 0.1 && Math.Abs((double)Get(form, "_trimIn")! - 2) < 1e-6, $"a click on the grip moves the playhead: {Pos(form):0.##}");
+            Key(form, Keys.C);
+            var selJob = (TrimJob)Call(form, "CurrentJob", Call(form, "Kept"))!;
+            H.Check((bool)Get(form, "Trimming")! && !(bool)Get(form, "_cropping")! && Math.Abs(selJob.OutputLength() - 5) < 1e-6,
+                $"C waits for the trim; exporting while trimming exports the selection ({selJob.OutputLength():0.###} s)");
+            Click(form, Centre(Button(form, "TrimApply")));
+            var cut = Tl(form);
+            H.Check(!(bool)Get(form, "Trimming")! && cut.Clips.Count == 3 && cut.Clips[0].Start == 0 && Math.Abs(cut.Clips[0].In - 2) < 1e-6
+                && Math.Abs(cut.Clips[2].Out - 7) < 1e-6 && Math.Abs(cut.End - 5) < 1e-6 && trimUndo.Count == trimSteps + 1, $"Apply trim across clips: {Show(cut)}");
+            Key(form, Keys.Control | Keys.Z);
+            H.Check(Tl(form).SameAs(tl), $"and undoes in one step: {Show(Tl(form))}");
+            Key(form, Keys.T);
+            Click(form, Centre(Button(form, "TrimCancel")));
+            H.Check(!(bool)Get(form, "Trimming")! && Tl(form).SameAs(tl) && trimUndo.Count == trimSteps, "T then Cancel leaves the timeline as it was");
+        }
 
         // Click the middle clip: selected, the playhead goes there.
         Click(form, ClipCentre(form, tl.Clips[1]));
@@ -339,7 +370,7 @@ static class TimelineUiTests
         Snap(form, "u4_sound_fade_transition");
 
         // Export window and export of the window's own timeline.
-        var job = (TrimJob)Call(form, "CurrentJob")!;
+        var job = (TrimJob)Call(form, "CurrentJob", (object?)null)!;
         var dlg = new ExportDialog(job) { StartPosition = FormStartPosition.Manual, Location = new Point(-31900, -31900) };
         ShowWindow(dlg.Handle, 4);
         Pump(0.6);

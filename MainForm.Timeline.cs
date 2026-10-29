@@ -65,7 +65,7 @@ sealed partial class MainForm
     void UpdateView()
     {
         if (_drag != Drag.None) return;
-        _viewLen = Trimming ? _tl.SourceEnd : _tl.End > 0 ? _tl.End : 1;
+        _viewLen = _tl.End > 0 ? _tl.End : 1;
     }
 
     RectangleF ClipRect(Clip c) => new(X(c.Start), VideoRect.Top, Math.Max(1, X(c.End) - X(c.Start)), VideoRect.Height);
@@ -95,8 +95,8 @@ sealed partial class MainForm
     (Hit Hit, int Id) TimelineHit(Point p)
     {
         if (!TimelineRect.Contains(p)) return (Hit.None, -1);
-        if (p.Y < RulerRect.Bottom + P(1)) return (Hit.Ruler, -1);
         if (Trimming) return TrimHit(p);
+        if (p.Y < RulerRect.Bottom + P(1)) return (Hit.Ruler, -1);
         var video = Rectangle.FromLTRB(VideoRect.Left, VideoRect.Top, VideoRect.Right, WaveRect.Bottom);
         if (p.Y <= video.Bottom + P(3))
         {
@@ -330,7 +330,6 @@ sealed partial class MainForm
             }
         }
         // The end of the timeline
-        if (Trimming) return;
         using var end = new Pen(C(140, Theme.AccentHover), 1);
         g.DrawLine(end, X(_tl.End), rr.Top, X(_tl.End), MusicRect.Bottom);
     }
@@ -339,8 +338,7 @@ sealed partial class MainForm
     void UpdateTracks(Rectangle tr)
     {
         if (_info == null || tr.Width <= 0) return;
-        var shown = _trimView ?? _tl;
-        var key = (Trimming ? -1 - _tlVersion : _tlVersion, _stripVersion, _peaksVersion, EffectiveRotation, tr.Width, tr.Height, _viewLen);
+        var key = (_tlVersion, _stripVersion, _peaksVersion, EffectiveRotation, tr.Width, tr.Height, _viewLen);
         if (_tracks != null && key == _tracksKey) return;
         _tracksKey = key;
         if (_tracks == null || _tracks.Width != tr.Width || _tracks.Height != tr.Height)
@@ -365,7 +363,7 @@ sealed partial class MainForm
         var (dw, dh) = _info.DisplaySize(_rot);
         float tileW = Math.Max(P(14), VideoRect.Height * (float)dw / Math.Max(1, dh));
         int rot = EffectiveRotation;
-        foreach (var c in shown.Clips)
+        foreach (var c in _tl.Clips)
         {
             var r = ClipRect(c);
             var whole = RectangleF.FromLTRB(r.Left, VideoRect.Top, r.Right, WaveRect.Bottom);
@@ -390,7 +388,7 @@ sealed partial class MainForm
         }
 
         using var nameFont = new Font("Segoe UI Semibold", 8f);
-        foreach (var m in shown.Music)
+        foreach (var m in _tl.Music)
         {
             var r = MusicRectOf(m);
             using var path = RoundRect(r, P(5));
@@ -502,7 +500,7 @@ sealed partial class MainForm
     void Edit(Timeline next, string? toast = null)
     {
         if (ReferenceEquals(next, _tl)) return;
-        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
+        if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
         if (next.SameAs(_tl)) { _tlVersion++; UpdateView(); Invalidate(); return; }
         _undo.Push(_tl);
         _redo.Clear();
@@ -514,7 +512,7 @@ sealed partial class MainForm
     void Undo()
     {
         if (_info == null || _drag != Drag.None) return;
-        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
+        if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
         if (_undo.Count == 0) { ShowToast("Nothing to undo"); return; }
         _redo.Push(_tl);
         _tl = _undo.Pop();
@@ -525,7 +523,7 @@ sealed partial class MainForm
     void Redo()
     {
         if (_info == null || _drag != Drag.None) return;
-        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
+        if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
         if (_redo.Count == 0) { ShowToast("Nothing to redo"); return; }
         _undo.Push(_tl);
         _tl = _redo.Pop();
@@ -550,7 +548,7 @@ sealed partial class MainForm
     void SplitHere()
     {
         if (_info == null || _drag != Drag.None) return;
-        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
+        if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
         if (_playing) Pause();
         var next = _tl.Split(_pos, out int second);
         if (second < 0) { ShowToast(_tl.At(_pos) == null ? "No clip under the playhead" : "Already a cut here"); return; }
@@ -576,7 +574,7 @@ sealed partial class MainForm
     void AddAudioDialog()
     {
         if (_info == null || _drag != Drag.None) return;
-        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
+        if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
         RevealCursor();
         using var dlg = new OpenFileDialog { Filter = SoundFilter, Title = "Add sound", Multiselect = true };
         if (dlg.ShowDialog(this) == DialogResult.OK) AddAudio(dlg.FileNames, _pos);
@@ -587,7 +585,7 @@ sealed partial class MainForm
     {
         if (_info == null) { ShowToast("Open a video first"); return; }
         if (_drag != Drag.None) return;
-        if (Trimming) { ShowToast("Keep or cancel the trim first (Enter / Esc)"); return; }
+        if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
         var next = _tl;
         int added = 0, last = -1;
         foreach (var path in paths)
@@ -788,6 +786,9 @@ sealed partial class MainForm
             case Drag.Seek:
                 ShowFrameAt(_pos, exact: true);
                 break;
+            case Drag.TrimMove when !_moved:
+                ScrubTo(x, exact: true);
+                break;
             case Drag.TrimStart or Drag.TrimEnd or Drag.TrimMove:
                 ShowFrameAt(_pos, exact: true);
                 break;
@@ -912,11 +913,6 @@ sealed partial class MainForm
     void ShowFrameAt(double t, bool exact = true)
     {
         if (_pb == null) return;
-        if (Trimming)
-        {
-            if (exact) _pb.ShowAt(t, 0); else _pb.ShowNear(t, 0);
-            return;
-        }
         if (_tl.At(t) is Clip c)
         {
             double source = c.In + (t - c.Start);
@@ -930,11 +926,12 @@ sealed partial class MainForm
     /// The export: one stretch of the file when the timeline is just that (one clip from 0, no fades, no sound added, so
     /// it can be copied without re-encoding or looped back and forth), otherwise the whole timeline.
     /// </summary>
-    TrimJob CurrentJob()
+    TrimJob CurrentJob(Timeline? timeline = null)
     {
+        var tl = timeline ?? _tl;
         var crop = HasCrop ? _crop : (RectangleF?)null;
-        if (_tl.Clips.Count == 1 && _tl.Music.Count == 0 && _tl.Clips[0] is { Start: < 1e-6, FadeIn: <= 0, FadeOut: <= 0 } only)
+        if (tl.Clips.Count == 1 && tl.Music.Count == 0 && tl.Clips[0] is { Start: < 1e-6, FadeIn: <= 0, FadeOut: <= 0 } only)
             return new TrimJob(_info!, only.In, only.Out, _rot) { Crop = crop };
-        return new TrimJob(_info!, 0, _tl.End, _rot) { Crop = crop, Edit = EditList.Of(_tl) };
+        return new TrimJob(_info!, 0, tl.End, _rot) { Crop = crop, Edit = EditList.Of(tl) };
     }
 }
