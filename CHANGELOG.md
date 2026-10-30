@@ -8,6 +8,10 @@ All notable changes to Splicia are listed here.
 
 - **Trim is back.** Press T (or the trim button) to put a yellow selection over the selected clip, or over the whole timeline when none is selected; double-clicking a clip starts with that clip. Drag the yellow handles to set where it starts and ends, or the grip on the ruler to slide it along; I and O (or [ and ]) set the start and end at the playhead, and Space plays just the selection. It can span several clips and sounds: **Apply trim** (or Enter) keeps only what's inside it, cut where the selection cuts them and moved to the start, and you carry on editing. Cancel (or Esc) leaves the timeline as it was. Exporting while trimming exports just the selection.
 
+### Fixes
+
+- The keyboard shortcuts window no longer cuts off its longer descriptions.
+
 ## [1.0.6] - 2026-10-27
 
 ### What's new
