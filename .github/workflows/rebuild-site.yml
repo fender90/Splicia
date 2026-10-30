@@ -1,0 +1,26 @@
+# Rebuilds vesperislabs.com when a release is published or its notes are edited, so the
+# app's page there is built with that release. (The page also asks GitHub on every visit,
+# but until GitHub answers it shows the release its last build found.)
+#
+# VERCEL_DEPLOY_HOOK (a repository secret) is the site's Vercel deploy hook, which rebuilds
+# the site's main branch: what is already live, with the new release. The workflow can also
+# be run by hand from the Actions tab.
+name: Rebuild vesperislabs.com
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the site's deploy hook
+        env:
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then echo "::error::The VERCEL_DEPLOY_HOOK secret is not set"; exit 1; fi
+          curl -fsS -X POST "$HOOK"
