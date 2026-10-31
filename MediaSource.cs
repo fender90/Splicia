@@ -86,6 +86,8 @@ unsafe sealed class MediaSource : IDisposable
     double _curTime, _pushbackTime;
     SwsContext* _sws;
     (int W, int H, int Fmt, int Cs, int Range, int OutW, int OutH) _swsKey;
+    byte* _conv;      // aligned, padded pictures for swscale when a frame's rows aren't (see Convert)
+    long _convSize;
     SwrContext* _swr;
     (int Fmt, int Rate, ulong Layout, int Channels) _swrKey;
     readonly int _vi = -1, _ai = -1;
@@ -507,12 +509,29 @@ unsafe sealed class MediaSource : IDisposable
             _swsKey = key;
         }
         dst.EnsureSize(outW, outH);
-        fixed (byte* p = dst.Data)
+        int stride = outW * 4;
+        if (stride % 64 == 0)
         {
-            var dstData = new byte*[] { p, null, null, null };
-            var dstStride = new[] { outW * 4, 0, 0, 0 };
-            sws_scale(_sws, f->data.ToArray(), f->linesize.ToArray(), 0, h, dstData, dstStride);
+            fixed (byte* p = dst.Data)
+                sws_scale(_sws, f->data.ToArray(), f->linesize.ToArray(), 0, h, new byte*[] { p, null, null, null }, new[] { stride, 0, 0, 0 });
+            return;
         }
+        // swscale writes a row in blocks of pixels and expects rows padded to 64 bytes, as FFmpeg allocates them: a row
+        // that isn't (an odd width, 811 pixels, say) is written past its end, and the last one past the end of the frame,
+        // into whatever memory follows. So the picture goes into such a buffer first, then its rows are copied over.
+        int padded = (stride + 63) & ~63;
+        long need = (long)padded * outH + 64;
+        if (_conv == null || _convSize < need)
+        {
+            av_free(_conv);
+            _conv = (byte*)av_malloc((ulong)need);
+            if (_conv == null) throw new OutOfMemoryException("No memory for a video frame.");
+            _convSize = need;
+        }
+        sws_scale(_sws, f->data.ToArray(), f->linesize.ToArray(), 0, h, new byte*[] { _conv, null, null, null }, new[] { padded, 0, 0, 0 });
+        fixed (byte* p = dst.Data)
+            for (int y = 0; y < outH; y++)
+                Buffer.MemoryCopy(_conv + (long)y * padded, p + (long)y * stride, stride, stride);
     }
 
     static bool IsJpegFormat(AVPixelFormat f) => f is AVPixelFormat.AV_PIX_FMT_YUVJ420P or AVPixelFormat.AV_PIX_FMT_YUVJ422P
@@ -603,6 +622,8 @@ unsafe sealed class MediaSource : IDisposable
     {
         sws_freeContext(_sws);
         _sws = null;
+        av_free(_conv);
+        _conv = null;
         fixed (SwrContext** pp = &_swr) swr_free(pp);
         fixed (AVFrame** p = &_vframe) av_frame_free(p);
         fixed (AVFrame** p = &_aframe) av_frame_free(p);

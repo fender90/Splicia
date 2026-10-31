@@ -2,6 +2,12 @@
 
 All notable changes to Splicia are listed here.
 
+## [1.0.8] - 2026-10-31
+
+### Fixes
+
+- Playing some videos could crash the app: those whose width isn't a multiple of 16 pixels, such as many WebM videos and portrait phone videos.
+
 ## [1.0.7] - 2026-10-29
 
 ### What's new
@@ -38,6 +44,7 @@ All notable changes to Splicia are listed here.
 
 - Several bug fixes.
 
+[1.0.8]: https://github.com/fender90/Splicia/releases/tag/v1.0.8
 [1.0.7]: https://github.com/fender90/Splicia/releases/tag/v1.0.7
 [1.0.6]: https://github.com/fender90/Splicia/releases/tag/v1.0.6
 [1.0.5]: https://github.com/fender90/Splicia/releases/tag/v1.0.5

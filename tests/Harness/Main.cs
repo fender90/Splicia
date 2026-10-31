@@ -87,6 +87,9 @@ static class Program
         Make("t5_noaudio.mkv", "-f lavfi -i \"testsrc=size=1280x720:rate=60:duration=6\" -c:v libx264 -preset veryfast");
         Make("t8_ntsc.mp4", "-f lavfi -i \"testsrc=size=640x360:rate=30000/1001:duration=8\" -f lavfi -i \"sine=f=500:duration=8\" " +
                             "-c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest");
+        // WebM, VP8 + Vorbis, at an odd size: rows that aren't a multiple of 64 bytes once converted.
+        Make("t9_vp8_odd.webm", "-f lavfi -i \"testsrc=size=811x1442:rate=30:duration=8\" -f lavfi -i \"sine=f=440:duration=8:sample_rate=44100\" " +
+                                "-ac 2 -c:v libvpx -b:v 2M -c:a libvorbis");
         // Sound files for the audio track: a 1 kHz tone (WAV) and a 300 Hz tone (MP3).
         Make("s1_tone.wav", "-f lavfi -i \"sine=f=1000:duration=3:sample_rate=44100\" -ac 2 -c:a pcm_s16le");
         Make("s2_low.mp3", "-f lavfi -i \"sine=f=300:duration=4:sample_rate=44100\" -ac 2 -c:a libmp3lame -b:a 192k");

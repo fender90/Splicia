@@ -528,6 +528,21 @@ static class TimelineTests
             }
         }
 
+        // WebM (VP8 + Vorbis) at an odd size, 811 × 1442: exported to H.264 at an even size, with its sound.
+        string webm = Path.Combine(H.Vids, "t9_vp8_odd.webm");
+        using (var ms = new MediaSource(webm, decoders: false))
+        {
+            var tl = Packed(ms.Info, (0, 3, Cut), (4, 6, Cross(0.5)));
+            string outWebm = Path.Combine(H.Out, "tl15_webm.mp4");
+            try
+            {
+                Export(Job(ms.Info, tl), new ExportSettings(ExportFormat.H264, ExportQuality.Balanced, true, outWebm));
+                string p = H.Probe(outWebm, "-show_entries stream=codec_type,width,height,nb_frames -of compact=p=0");
+                H.Check(p.Contains("width=810|height=1442") && p.Contains("nb_frames=150") && p.Contains("codec_type=audio"), $"WebM → H.264: {p}");
+            }
+            catch (Exception ex) { H.Check(false, $"WebM export: {ex.Message}"); }
+        }
+
         // Many clips: 85 four-frame clips and the last five frames, packed. Runs of 24, or one run with the graph in a file.
         string longClip = Path.Combine(H.Vids, "t1_h264_1080p30.mp4");
         using (var ms = new MediaSource(longClip, decoders: false))

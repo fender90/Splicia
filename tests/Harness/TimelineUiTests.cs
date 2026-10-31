@@ -490,6 +490,17 @@ static class TimelineUiTests
             && Gap("Crop", "Vol") >= 4,
             $"smallest window: undo {Btn("Undo")}, add sound {Btn("AddAudio")}, crop {Btn("Crop")}, volume {Btn("Vol")}");
         Snap(form, "u7_smallest_window");
+
+        // A WebM at an odd size opens, shows its thumbnails and plays (its pictures converted without overrunning their buffers).
+        Call(form, "Open", Path.Combine(H.Vids, "t9_vp8_odd.webm"));
+        Pump(1.5);
+        Call(form, "Play");
+        Pump(1.0);
+        Call(form, "Pause");
+        Pump(0.3);
+        var webmInfo = (MediaInfo)Get(form, "_info")!;
+        H.Check(webmInfo.Width == 811 && webmInfo.VideoCodec.Length > 0 && Pos(form) > 0.5, $"a WebM, VP8 811×1442, opens and plays: at {Pos(form):0.##} s");
+        Snap(form, "u10_webm");
         form.Close();
     }
 }

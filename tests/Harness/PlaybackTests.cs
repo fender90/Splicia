@@ -262,6 +262,17 @@ static class PlaybackTests
                 $"sound only: {r8.Frames.Count} black frames, the sound heard");
         }
 
+        // 10. WebM (VP8 + Vorbis) at an odd size, 811 × 1442: the pictures converted without overrunning their buffers.
+        string webm = Path.Combine(H.Vids, "t9_vp8_odd.webm");
+        using (var ws = new MediaSource(webm, decoders: false))
+        {
+            var tlw = TimelineTests.Packed(ws.Info, (0, 3, TimelineTests.Cut), (4, 6, TimelineTests.Cross(0.5)));
+            var rw = Play(webm, EditList.Of(tlw), 0, false, 6);
+            var (missW, gapW) = Smoothness(rw, tlw.End);
+            H.Check(ws.Info.Width == 811 && rw.Frames.Count > 120 && missW <= 3 && gapW < 3 * ws.Info.FrameDuration,
+                $"WebM, VP8 811×1442: {rw.Frames.Count} frames, {missW} missed, longest wait {gapW * 1000:0} ms");
+        }
+
         // 9. Not looping, nothing sounds after the end: started past the last video clip (the next round's first clip would
         // come in at the end), and past the last sound (the next round's first sound would).
         var r9 = Play(counter, EditList.Of(tl3), 4.6, false, 3);
