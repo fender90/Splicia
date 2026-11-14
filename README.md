@@ -11,6 +11,8 @@ Requires Windows 10 or 11 (64-bit). See [CHANGELOG.md](CHANGELOG.md) for what's 
 ## Features
 
 - Opens the common video formats, including iPhone .mov (HEVC, HDR), .mp4, .mkv, .webm and .avi
+- A player first: videos open with a compact timeline and the playback controls; Edit opens the editor
+- Hide faces: blur or pixelate every face, found automatically on your PC (turned heads and profiles too)
 - A timeline of clips: split at the playhead, delete (leaving a gap or closing it), drag clips to move or rearrange them; undo and redo
 - Trim: a yellow selection over the timeline (handles, or slide it along); apply it to keep only what's inside, across clips and sounds
 - Transitions where clips meet: a straight cut, a crossfade or a fade through black

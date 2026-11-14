@@ -54,6 +54,7 @@ static class Program
                 case "timeline": TimelineTests.Run(); break;
                 case "timelineui": TimelineUiTests.Run(); break;
                 case "play": PlaybackTests.Run(); break;
+                case "faces": FaceTests.Run(); FaceTests.Window(); break;
                 default: Console.WriteLine($"unknown mode {mode}"); return 1;
             }
         }
@@ -90,6 +91,26 @@ static class Program
         // WebM, VP8 + Vorbis, at an odd size: rows that aren't a multiple of 64 bytes once converted.
         Make("t9_vp8_odd.webm", "-f lavfi -i \"testsrc=size=811x1442:rate=30:duration=8\" -f lavfi -i \"sine=f=440:duration=8:sample_rate=44100\" " +
                                 "-ac 2 -c:v libvpx -b:v 2M -c:a libvorbis");
+        // Faces (public-domain NASA crew photos, assets\): 7 upright for 4 s, slowly panned, then 3 tilted 15° for 4 s; and
+        // the same stored sideways with the rotation to show it upright, as phones store video.
+        string assets = Path.Combine(AppContext.BaseDirectory, "assets");
+        Make("t10_faces.mp4", $"-loop 1 -framerate 30 -t 4 -i \"{Path.Combine(assets, "expedition64-crew.jpg")}\" " +
+                              $"-loop 1 -framerate 30 -t 4 -i \"{Path.Combine(assets, "apollo11-crew.jpg")}\" " +
+                              "-filter_complex \"[0:v]scale=1280:-2,crop=1280:720:0:'100+t*25',setsar=1[a];" +
+                              "[1:v]scale=1280:-2,rotate=15*PI/180:fillcolor=black,crop=1280:720:0:0,setsar=1[b];" +
+                              "[a][b]concat=n=2:v=1,format=yuv420p\" -c:v libx264 -preset veryfast -crf 18 -r 30");
+        string sideTmp = Path.Combine(H.Vids, "tmp_sideways.mp4");
+        if (!File.Exists(Path.Combine(H.Vids, "t11_faces_sideways.mp4")))
+        {
+            H.Ffmpeg($"-hide_banner -loglevel error -y -i \"{Path.Combine(H.Vids, "t10_faces.mp4")}\" -vf transpose=2 -c:v libx264 -preset veryfast -crf 18 \"{sideTmp}\"");
+            Make("t11_faces_sideways.mp4", $"-display_rotation:v:0 -90 -i \"{sideTmp}\" -c copy");
+            File.Delete(sideTmp);
+        }
+        // ... the upright part as 10-bit HDR (HLG, HEVC), at a size whose colour planes are an odd size
+        Make("t12_faces_hlg.mov", $"-i \"{Path.Combine(H.Vids, "t10_faces.mp4")}\" -t 4 " +
+                                  "-vf \"crop=1278:718:0:0,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv,format=yuv420p10le\" " +
+                                  "-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc " +
+                                  "-c:v libx265 -preset ultrafast -x265-params log-level=error -tag:v hvc1 -an");
         // Sound files for the audio track: a 1 kHz tone (WAV) and a 300 Hz tone (MP3).
         Make("s1_tone.wav", "-f lavfi -i \"sine=f=1000:duration=3:sample_rate=44100\" -ac 2 -c:a pcm_s16le");
         Make("s2_low.mp3", "-f lavfi -i \"sine=f=300:duration=4:sample_rate=44100\" -ac 2 -c:a libmp3lame -b:a 192k");

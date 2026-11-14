@@ -25,8 +25,9 @@ dotnet publish -c Release -o publish
 if ($LASTEXITCODE) { throw "publish failed" }
 $version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 
-# Payload: a zip of the ffmpeg runtime, appended to the exe, followed by its length (8 bytes) and the marker
-# "VTPAYLD1". The installer copies the exe part and unpacks the zip into <install dir>\ffmpeg.
+# Payload: a zip of the ffmpeg runtime (and, in its faces folder, the face model and ONNX Runtime), appended to the
+# exe, followed by its length (8 bytes) and the marker "VTPAYLD1". The installer copies the exe part and unpacks the
+# zip into <install dir>\ffmpeg.
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $zipPath = Join-Path $PSScriptRoot 'obj\ffmpeg-payload.zip'
 Remove-Item $zipPath -ErrorAction SilentlyContinue
@@ -34,6 +35,13 @@ $zip = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
 try {
     foreach ($f in $ffFiles + 'LICENSE.txt') {
         [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $PSScriptRoot "ffmpeg\$f"), $f, 'Optimal')
+    }
+    $faces = @{ 'faces/centerface.onnx' = 'faces\centerface.onnx'; 'faces/onnxruntime.dll' = 'publish\onnxruntime.dll';
+                'faces/onnxruntime_providers_shared.dll' = 'publish\onnxruntime_providers_shared.dll' }
+    foreach ($e in $faces.GetEnumerator()) {
+        $src = Join-Path $PSScriptRoot $e.Value
+        if (-not (Test-Path $src)) { throw "missing $src" }
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $src, $e.Key, 'Optimal')
     }
 }
 finally { $zip.Dispose() }

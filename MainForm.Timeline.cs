@@ -49,9 +49,10 @@ sealed partial class MainForm
     int TrackLeft => PanelRect.Left + Pad;
     int TrackWidth => PanelRect.Width - 2 * Pad;
     Rectangle RulerRect => new(TrackLeft, PanelRect.Top + P(62), TrackWidth, P(13));
-    Rectangle VideoRect => new(TrackLeft, PanelRect.Top + P(77), TrackWidth, P(40));
-    Rectangle WaveRect => new(TrackLeft, PanelRect.Top + P(117), TrackWidth, P(16));
-    Rectangle MusicRect => new(TrackLeft, PanelRect.Top + P(139), TrackWidth, P(32));
+    Rectangle VideoRect => new(TrackLeft, PanelRect.Top + P(77), TrackWidth, _editing ? P(40) : P(28));
+    // In the player there's no waveform or audio track: empty, at the bottom of the pictures
+    Rectangle WaveRect => _editing ? new(TrackLeft, PanelRect.Top + P(117), TrackWidth, P(16)) : new(TrackLeft, VideoRect.Bottom, TrackWidth, 0);
+    Rectangle MusicRect => _editing ? new(TrackLeft, PanelRect.Top + P(139), TrackWidth, P(32)) : new(TrackLeft, VideoRect.Bottom, TrackWidth, 0);
     Rectangle TimelineRect => Rectangle.FromLTRB(TrackLeft, RulerRect.Top - P(2), TrackLeft + TrackWidth, MusicRect.Bottom + P(2));
 
     float X(double t) => TrackLeft + (float)(t / _viewLen * TrackWidth);
@@ -95,6 +96,7 @@ sealed partial class MainForm
     (Hit Hit, int Id) TimelineHit(Point p)
     {
         if (!TimelineRect.Contains(p)) return (Hit.None, -1);
+        if (!_editing) return p.Y < RulerRect.Bottom + P(1) ? (Hit.Ruler, -1) : (Hit.Track, -1); // the player: anywhere seeks
         if (Trimming) return TrimHit(p);
         if (p.Y < RulerRect.Bottom + P(1)) return (Hit.Ruler, -1);
         var video = Rectangle.FromLTRB(VideoRect.Left, VideoRect.Top, VideoRect.Right, WaveRect.Bottom);
@@ -159,7 +161,7 @@ sealed partial class MainForm
         var tr = Rectangle.FromLTRB(TrackLeft, VideoRect.Top, TrackLeft + TrackWidth, MusicRect.Bottom);
         UpdateTracks(tr);
         if (_tracks != null) DrawFaded(g, _tracks, tr);
-        if (Trimming) DrawTrim(g); else DrawClipOverlays(g);
+        if (Trimming) DrawTrim(g); else if (_editing) DrawClipOverlays(g);
 
         // Playhead
         {
@@ -357,7 +359,7 @@ sealed partial class MainForm
         using (var lane = new SolidBrush(Color.FromArgb(22, 255, 255, 255)))
         {
             using (var p = RoundRect(Rectangle.FromLTRB(TrackLeft, VideoRect.Top, TrackLeft + TrackWidth, WaveRect.Bottom), P(5))) g.FillPath(lane, p);
-            using (var p = RoundRect(MusicRect, P(5))) g.FillPath(lane, p);
+            if (_editing) using (var p = RoundRect(MusicRect, P(5))) g.FillPath(lane, p);
         }
 
         var (dw, dh) = _info.DisplaySize(_rot);
@@ -379,16 +381,19 @@ sealed partial class MainForm
                     var thumb = _strip.Nearest((int)(Math.Clamp(t / Math.Max(Duration, 1e-6), 0, 1) * ThumbnailStrip.Count));
                     if (thumb != null) DrawRotated(g, thumb, new RectangleF(x, VideoRect.Top, tileW, VideoRect.Height), rot);
                 }
-            // Its sound
-            using (var wbg = new SolidBrush(Color.FromArgb(255, 16, 20, 40))) g.FillRectangle(wbg, RectangleF.FromLTRB(r.Left, WaveRect.Top, r.Right, WaveRect.Bottom));
-            if (_videoPeaks != null) DrawWave(g, _videoPeaks, c.In, r.Left, r.Right, WaveRect, VideoWave);
+            // Its sound (in the editor)
+            if (_editing)
+            {
+                using (var wbg = new SolidBrush(Color.FromArgb(255, 16, 20, 40))) g.FillRectangle(wbg, RectangleF.FromLTRB(r.Left, WaveRect.Top, r.Right, WaveRect.Bottom));
+                if (_videoPeaks != null) DrawWave(g, _videoPeaks, c.In, r.Left, r.Right, WaveRect, VideoWave);
+            }
             g.Restore(st);
             using var border = new Pen(Color.FromArgb(150, 0, 0, 0), 1);
             g.DrawPath(border, path);
         }
 
         using var nameFont = new Font("Segoe UI Semibold", 8f);
-        foreach (var m in _tl.Music)
+        foreach (var m in _editing ? _tl.Music : Array.Empty<AudioClip>())
         {
             var r = MusicRectOf(m);
             using var path = RoundRect(r, P(5));
@@ -930,8 +935,9 @@ sealed partial class MainForm
     {
         var tl = timeline ?? _tl;
         var crop = HasCrop ? _crop : (RectangleF?)null;
-        if (tl.Clips.Count == 1 && tl.Music.Count == 0 && tl.Clips[0] is { Start: < 1e-6, FadeIn: <= 0, FadeOut: <= 0 } only)
+        var faces = FacesNow(); // hidden faces are drawn by the edit's export
+        if (faces == null && tl.Clips.Count == 1 && tl.Music.Count == 0 && tl.Clips[0] is { Start: < 1e-6, FadeIn: <= 0, FadeOut: <= 0 } only)
             return new TrimJob(_info!, only.In, only.Out, _rot) { Crop = crop };
-        return new TrimJob(_info!, 0, tl.End, _rot) { Crop = crop, Edit = EditList.Of(tl) };
+        return new TrimJob(_info!, 0, tl.End, _rot) { Crop = crop, Edit = EditList.Of(tl), Faces = faces };
     }
 }

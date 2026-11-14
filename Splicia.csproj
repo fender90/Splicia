@@ -25,6 +25,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+    <!-- Face detection (CPU); its native onnxruntime.dll goes beside the exe, and with the installer into ffmpeg\faces -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
     <!-- tests\Harness is its own project -->
     <Compile Remove="tests\**" />
     <None Remove="tests\**" />
@@ -41,6 +43,9 @@
     <None Include="LICENSE.txt;THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The face model, where the installed app has it (ffmpeg\faces) -->
+    <None Include="faces\centerface.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" Link="ffmpeg\faces\centerface.onnx" />
     <!-- FFmpeg runtime (DLLs + ffmpeg.exe) next to the built exe, for running from bin\ or publish\ -->
     <None Include="ffmpeg\*.dll;ffmpeg\ffmpeg.exe;ffmpeg\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" Link="ffmpeg\%(Filename)%(Extension)" />

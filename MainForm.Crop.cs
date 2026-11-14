@@ -202,6 +202,7 @@ sealed partial class MainForm
         if (_info == null) return;
         if (_cropping) { FinishCrop(apply: true); return; }
         if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
+        _faceBar = false;
         _cropping = true;
         _cropBefore = _crop;
         _zoom = 1f;

@@ -73,7 +73,7 @@ sealed class Playback : IDisposable
         // Always (the audio track can bring sound to a silent video); the clock follows it.
         try { _audio = new AudioOut(); }
         catch (Exception ex) { CrashLog.Write(ex, "Opening audio output (continuing without sound)"); }
-        _lanes[0] = new Lane(_src, _size, Rent, Recycle, "Lane A");
+        _lanes[0] = new Lane(_src, _size, Rent, Recycle, "Lane A", Process);
         _thread = new Thread(Run) { IsBackground = true, Name = "Playback" };
         _thread.Start();
     }
@@ -104,6 +104,21 @@ sealed class Playback : IDisposable
     bool Looping { get { lock (_gate) return _loop; } }
 
     // ───────────────────────── UI side ─────────────────────────
+
+    /// <summary>How faces are hidden in the frames shown (null: they aren't); replaced as a whole when it changes.</summary>
+    public FaceEffect? Faces { get; set; }
+    bool _faceFailed;
+
+    /// <summary>Done to every decoded frame before it's shown or mixed: hides the faces in it.</summary>
+    void Process(VideoFrame f)
+    {
+        try { Faces?.Apply(f); }
+        catch (Exception ex)
+        {
+            if (!_faceFailed) CrashLog.Write(ex, "Hiding faces in a frame");
+            _faceFailed = true;
+        }
+    }
 
     /// <summary>
     /// Shows the file's frame on screen at <paramref name="time"/> (paused); the frame's <see cref="VideoFrame.Out"/> is
@@ -303,6 +318,7 @@ sealed class Playback : IDisposable
                 ok = false;
             }
         }
+        if (ok && r.Kind != Kind.Black) Process(f);
         f.Exact = r.Kind is Kind.Black or Kind.At or Kind.After || Math.Abs(f.Time - r.Time) < Info.FrameDuration;
         f.Out = r.Kind == Kind.Black ? r.Out : f.Time + (r.Out - r.Time);
         lock (_gate)
@@ -413,7 +429,7 @@ sealed class Playback : IDisposable
     {
         if (_lanes[1] != null) return;
         _src2 = new MediaSource(_path);
-        _lanes[1] = new Lane(_src2, _size, Rent, Recycle, "Lane B");
+        _lanes[1] = new Lane(_src2, _size, Rent, Recycle, "Lane B", Process);
     }
 
     EditAudio Sound()

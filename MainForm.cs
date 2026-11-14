@@ -14,15 +14,15 @@ sealed partial class MainForm : Form
     enum Hit
     {
         None, Center, Ruler, Track, Clip, ClipFadeIn, ClipFadeOut, Junction, Music, MusicStart, MusicEnd, MusicFadeIn, MusicFadeOut,
-        MusicLane, TrimStart, TrimEnd, TrimGrip, Play, Prev, Next, Undo, Redo, Split, Trim, Delete, AddAudio, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
-        Export, Pin, Min, Max, Close, TrimApply, TrimCancel, Panel /* the panel's background, between its controls */,
+        MusicLane, TrimStart, TrimEnd, TrimGrip, Play, Prev, Next, Undo, Redo, Split, Trim, Delete, AddAudio, Faces, FaceBar, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
+        Export, Edit, EditDone, Pin, Min, Max, Close, TrimApply, TrimCancel, Panel /* the panel's background, between its controls */,
     }
-    enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut, TrimStart, TrimEnd, TrimMove }
+    enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut, TrimStart, TrimEnd, TrimMove, FaceAmount }
 
     static readonly Hit[] HitOrder =
     {
-        Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.TrimApply, Hit.TrimCancel, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete,
-        Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Center,
+        Hit.FaceBar, Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.TrimApply, Hit.TrimCancel, Hit.EditDone, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete, Hit.Faces,
+        Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Edit, Hit.Center,
         Hit.CropArea,
     };
     const double HideAfterSeconds = 2.5;
@@ -65,6 +65,7 @@ sealed partial class MainForm : Form
     Point _lastMousePos = new(int.MinValue, int.MinValue);
     float _ui = 1f; // overlay opacity 0..1
     bool _pinned = true; // the control panel docked under the picture and always shown (unpinned: floats over it, hides when idle)
+    bool _editing;       // the editor (the full timeline and its tools); else the player: a compact timeline, playback controls
     double _quietUntil; // clicks on the picture or the panel's background are ignored until then (right after the pin moved)
     float _paintAlpha = -1f; // while painting a pinned panel: full strength, whatever the overlay's opacity
 
@@ -93,7 +94,7 @@ sealed partial class MainForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         ClientSize = new Size(P(1100), P(700));
-        MinimumSize = new Size(P(1010), P(600));
+        MinimumSize = new Size(P(1052), P(600));
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         AllowDrop = true;
@@ -114,7 +115,13 @@ sealed partial class MainForm : Form
             if (e.Data?.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } files) return;
             var at = PointToClient(new Point(e.X, e.Y));
             // Sound files go on the audio track (where dropped on the timeline, else at the playhead); a video opens.
-            if (files.All(IsSoundFile)) BeginInvoke(() => AddAudio(files, TimelineRect.Contains(at) ? _tl.Snap(TimeAt(at.X)) : _pos));
+            if (files.All(IsSoundFile)) BeginInvoke(() =>
+            {
+                // Where it landed on the timeline as it was (opening the editor makes the panel taller)
+                double t = TimelineRect.Contains(at) ? _tl.Snap(TimeAt(at.X)) : _pos;
+                SetEditing(true);
+                AddAudio(files, t);
+            });
             else BeginInvoke(() => Open(files.First(f => !IsSoundFile(f))));
         };
 
@@ -296,7 +303,7 @@ sealed partial class MainForm : Form
     int Pad => P(24);
 
     /// <summary>The timeline's share of the panel's height: none until a video is open (then just the header and buttons).</summary>
-    int TimelineSpace => _info != null ? P(116) : 0;
+    int TimelineSpace => _info == null ? 0 : _editing ? P(116) : P(48);
 
     Rectangle WindowButtonsRect
     {
@@ -304,6 +311,7 @@ sealed partial class MainForm : Form
     }
 
     int ExportW => P(108);
+    int DoneW => TextRenderer.MeasureText("Done", _chipFont).Width + P(26);
 
     Rectangle Rect(Hit h)
     {
@@ -313,6 +321,9 @@ sealed partial class MainForm : Form
         var wb = WindowButtonsRect;
         int d = P(78);
         int exportX = right - P(8) - ExportW, moreX = exportX - P(12) - bs;
+        if (!_editing && h is Hit.Undo or Hit.Redo or Hit.Split or Hit.Trim or Hit.Delete or Hit.AddAudio or Hit.RotL or Hit.RotR or Hit.Crop or Hit.Faces or Hit.Export)
+            return Rectangle.Empty;
+        if (_editing && h == Hit.Edit) return Rectangle.Empty;
         return h switch
         {
             Hit.Play => new Rectangle(left, rowY, bs, bs),
@@ -328,7 +339,9 @@ sealed partial class MainForm : Form
             Hit.RotL => new Rectangle(left + 9 * step + P(32), rowY, bs, bs),
             Hit.RotR => new Rectangle(left + 10 * step + P(32), rowY, bs, bs),
             Hit.Crop => new Rectangle(left + 11 * step + P(32), rowY, bs, bs),
-            Hit.Export => new Rectangle(exportX, rowY, ExportW, bs),
+            Hit.Faces => new Rectangle(left + 12 * step + P(32), rowY, bs, bs),
+            Hit.Export or Hit.Edit => new Rectangle(exportX, rowY, ExportW, bs),
+            Hit.EditDone => _editing && _info != null ? new Rectangle(pr.Right - Pad - P(30) - P(10) - DoneW, pr.Top + P(10), DoneW, P(24)) : Rectangle.Empty,
             Hit.Pin => new Rectangle(pr.Right - Pad - P(30), pr.Top + P(8), P(30), P(28)),
             Hit.TrimApply => TrimButtonRect(apply: true),
             Hit.TrimCancel => TrimButtonRect(apply: false),
@@ -374,7 +387,12 @@ sealed partial class MainForm : Form
         if (!overlay && !_pinned) return Hit.None;
         foreach (var h in HitOrder)
         {
-            if (!overlay && h is Hit.Min or Hit.Max or Hit.Close or Hit.Center or Hit.CropBar or Hit.CropArea) continue;
+            if (!overlay && h is Hit.Min or Hit.Max or Hit.Close or Hit.Center or Hit.CropBar or Hit.CropArea or Hit.FaceBar) continue;
+            if (h == Hit.FaceBar)
+            {
+                if (_faceBar && FaceBarRect.Contains(p)) return h;
+                continue;
+            }
             if (h == Hit.CropBar)
             {
                 if (_cropping && CropBarRect.Contains(p)) return h;
@@ -566,6 +584,7 @@ sealed partial class MainForm : Form
             else using (var pp = RoundRect(pr, P(14))) Glass(g, pp, pr, darken: 135); // darker than the other glass: text and trim frame stay legible over bright video
             DrawPanelContents(g, pr);
             if (_cropping) DrawCropBar(g);
+            if (_faceBar) DrawFaceBar(g);
             if (_hintVisible && _hover != Hit.None && _drag == Drag.None) DrawHint(g, _hover);
         }
         finally { _paintAlpha = -1f; }
@@ -637,7 +656,7 @@ sealed partial class MainForm : Form
 
         float timeW = g.MeasureString(time, _timeFont).Width, selW = g.MeasureString(sel, _smallFont).Width;
         if (Trimming) selW = pr.Right - Pad - TrimButtonRect(apply: false).Left; // the Apply and Cancel buttons are there
-        float pinW = P(40); // the pin button at the top right
+        float pinW = P(40) + (Rect(Hit.EditDone) is { IsEmpty: false } done ? done.Width + P(10) : 0); // the pin (and Done) at the top right
         g.DrawString(title, _titleFont, titleBrush, new RectangleF(pr.Left + Pad, pr.Top + P(14), pr.Width - 2 * Pad - timeW - pinW - P(16), P(26)), sf);
         g.DrawString(time, _timeFont, titleBrush, pr.Right - Pad - pinW - timeW, pr.Top + P(16));
         g.DrawString(sub, _smallFont, subBrush, new RectangleF(pr.Left + Pad, pr.Top + P(41), pr.Width - 2 * Pad - selW - P(16), P(18)), sf);
@@ -645,12 +664,14 @@ sealed partial class MainForm : Form
 
         DrawTimeline(g);
         if (Trimming) DrawTrimButtons(g);
+        if (Rect(Hit.EditDone) is { IsEmpty: false } doneRect) DrawPill(g, doneRect, "Done", accent: false, _hover == Hit.EditDone);
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
-        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.Loop, Hit.Full, Hit.More, Hit.Pin })
+        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Faces, Hit.Vol, Hit.Loop, Hit.Full, Hit.More, Hit.Pin })
         {
             var r = Rect(h);
+            if (r.IsEmpty) continue; // the editing tools, in the player
             bool enabled = (has || h is Hit.More or Hit.Full or Hit.Pin) && (h != Hit.Delete || _selClip >= 0 || _selMusic >= 0)
                 && (h != Hit.Undo || _undo.Count > 0) && (h != Hit.Redo || _redo.Count > 0)
                 && !(Trimming && h is Hit.Undo or Hit.Redo or Hit.Split or Hit.Delete or Hit.AddAudio);
@@ -672,6 +693,7 @@ sealed partial class MainForm : Form
                 case Hit.RotL: RotateGlyph(g, gr, col, clockwise: false); break;
                 case Hit.RotR: RotateGlyph(g, gr, col, clockwise: true); break;
                 case Hit.Crop: CropGlyph(g, gr, enabled && (HasCrop || _cropping) ? C(255, Theme.AccentHover) : col); break;
+                case Hit.Faces: FaceGlyph(g, gr, enabled && (_faceMode != FaceMode.Off || _faceBar) ? C(255, Theme.AccentHover) : col); break;
                 case Hit.Vol: SpeakerGlyph(g, gr, col, _muted || _volume == 0); break;
                 case Hit.Loop: LoopGlyph(g, gr, col); break;
                 case Hit.Full: FullGlyph(g, gr, col, _fullscreen); break;
@@ -680,9 +702,11 @@ sealed partial class MainForm : Form
             }
         }
 
-        // Export: the one accent-coloured button
-        var er = Rect(Hit.Export);
-        bool down = _pressed == Hit.Export && _hover == Hit.Export, hot = _hover == Hit.Export;
+        // The one accent-coloured button: Edit in the player, Export in the editor
+        var accent = _editing ? Hit.Export : Hit.Edit;
+        string accentText = _editing ? "Export" : "Edit";
+        var er = Rect(accent);
+        bool down = _pressed == accent && _hover == accent, hot = _hover == accent;
         using (var ep = RoundRect(er, er.Height / 2f))
         {
             if (!has)
@@ -695,11 +719,59 @@ sealed partial class MainForm : Form
                     g.FillPath(eb, ep);
         }
         var textCol = has ? W(255) : W(110);
-        var tsize = g.MeasureString("Export", _buttonFont);
+        var tsize = g.MeasureString(accentText, _buttonFont);
         float icon = P(14), gap = P(7), total = icon + gap + tsize.Width, x0 = er.Left + (er.Width - total) / 2;
-        ExportGlyph(g, new RectangleF(x0, er.Top + (er.Height - icon) / 2f, icon, icon), textCol);
+        var iconRect = new RectangleF(x0, er.Top + (er.Height - icon) / 2f, icon, icon);
+        if (_editing) ExportGlyph(g, iconRect, textCol); else EditGlyph(g, iconRect, textCol);
         using (var tb = new SolidBrush(textCol))
-            g.DrawString("Export", _buttonFont, tb, x0 + icon + gap - P(2), er.Top + (er.Height - tsize.Height) / 2f + P(0.5f));
+            g.DrawString(accentText, _buttonFont, tb, x0 + icon + gap - P(2), er.Top + (er.Height - tsize.Height) / 2f + P(0.5f));
+    }
+
+    /// <summary>A pill button with a text label in the panel (Done; trim's Apply and Cancel).</summary>
+    void DrawPill(Graphics g, Rectangle r, string text, bool accent, bool hot)
+    {
+        Color fill = accent ? (hot ? Theme.AccentHover : Theme.Accent) : hot ? Color.FromArgb(60, 255, 255, 255) : Color.FromArgb(28, 255, 255, 255);
+        using (var p = RoundRect(r, r.Height / 2f))
+        using (var b = new SolidBrush(C(fill.A, fill))) g.FillPath(b, p);
+        TextRenderer.DrawText(g, text, _chipFont, r, C(255, 255, 255, 255),
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+    }
+
+    /// <summary>Edit button: a pencil.</summary>
+    void EditGlyph(Graphics g, RectangleF r, Color c)
+    {
+        using var pen = GlyphPen(c, 1.6f);
+        float w = r.Width, h = r.Height;
+        g.DrawPolygon(pen, new[]
+        {
+            new PointF(r.X + w * 0.08f, r.Bottom - h * 0.08f), new PointF(r.X + w * 0.14f, r.Bottom - h * 0.3f),
+            new PointF(r.Right - h * 0.3f, r.Y + h * 0.06f), new PointF(r.Right - h * 0.06f, r.Y + h * 0.3f),
+            new PointF(r.X + w * 0.3f, r.Bottom - h * 0.14f),
+        });
+        g.DrawLine(pen, r.X + w * 0.14f, r.Bottom - h * 0.3f, r.X + w * 0.3f, r.Bottom - h * 0.14f);
+    }
+
+    /// <summary>
+    /// The editor (the full timeline, the audio track and the editing tools) or the player (a compact timeline and the
+    /// playback controls). A video opens in the player; Edit (or E) opens the editor, Done (or E) goes back.
+    /// </summary>
+    void SetEditing(bool on)
+    {
+        if (_info == null || on == _editing || _drag != Drag.None) return;
+        if (!on)
+        {
+            if (Trimming) { ShowToast("Apply or cancel the trim first"); return; }
+            FinishCrop(apply: true);
+            _selClip = _selMusic = -1;
+            _faceBar = false;
+        }
+        _editing = on;
+        _hover = Hit.None;
+        _hintVisible = false;
+        ClampCenter();
+        _blurDirty = true;
+        Activity();
+        Invalidate();
     }
 
     void DrawFaded(Graphics g, Image img, RectangleF dest)
@@ -770,6 +842,9 @@ sealed partial class MainForm : Form
         Hit.Loop => _loop ? "Loop: on" : "Loop: off",
         Hit.Full => _fullscreen ? "Exit fullscreen  (F)" : "Fullscreen  (F)",
         Hit.More => "More",
+        Hit.Edit => "Edit the video: cut, trim, transitions, sound, crop…  (E)",
+        Hit.Faces => _faceMode == FaceMode.Off ? "Hide faces: blur or pixelate them" : $"Faces {(_faceMode == FaceMode.Blur ? "blurred" : "pixelated")} ({_faceAmount}%)",
+        Hit.EditDone => "Back to the player  (E)",
         Hit.Pin => _pinned ? "Unpin the panel: it floats over the video and hides when idle  (P)" : "Pin the panel under the video  (P)",
         Hit.Export => "Export the timeline  (Ctrl+E)",
         Hit.Clip => "Drag to move or rearrange; right-click for fades and more",
@@ -1353,6 +1428,7 @@ sealed partial class MainForm : Form
 
         if (_drag == Drag.Crop) { Activity(); DragCrop(e.Location); return; }
         if (_drag == Drag.Volume) { Activity(); DragTo(e.X); return; }
+        if (_drag == Drag.FaceAmount) { Activity(); SetFaceAmountAt(e.X); return; }
         if (_drag != Drag.None) { Activity(); TimelineDrag(e.X); return; }
 
         if (_dragArmed)
@@ -1378,8 +1454,8 @@ sealed partial class MainForm : Form
         var h = HitTest(e.Location);
         bool onPanel = h == Hit.Panel;
         if (onPanel) h = Hit.None; // nothing to hover there
-        int item = h == Hit.CropBar ? CropItemAt(e.Location) : int.MinValue;
-        if (item != _hoverItem) { _hoverItem = item; Invalidate(CropBarRect); }
+        int item = h == Hit.CropBar ? CropItemAt(e.Location) : h == Hit.FaceBar ? FaceItemAt(e.Location) : int.MinValue;
+        if (item != _hoverItem) { _hoverItem = item; Invalidate(h == Hit.FaceBar || _faceBar ? FaceBarRect : CropBarRect); }
         int id = IsTimelineHit(h) ? _hitId : -1;
         if (h != _hover || id != _hoverId)
         {
@@ -1392,7 +1468,7 @@ sealed partial class MainForm : Form
         Cursor = h is Hit.MusicStart or Hit.MusicEnd or Hit.ClipFadeIn or Hit.ClipFadeOut or Hit.MusicFadeIn or Hit.MusicFadeOut
                 or Hit.TrimStart or Hit.TrimEnd ? Cursors.SizeWE
             : h is Hit.Clip or Hit.Music or Hit.TrimGrip ? Cursors.SizeAll
-            : h == Hit.CropArea ? CropCursor(CropPartAt(e.Location)) : h == Hit.CropBar && item == int.MinValue ? Cursors.Default
+            : h == Hit.CropArea ? CropCursor(CropPartAt(e.Location)) : h is Hit.CropBar or Hit.FaceBar && item == int.MinValue ? Cursors.Default
             : h != Hit.None ? Cursors.Hand : _zoom > 1f && !onPanel ? Cursors.SizeAll : Cursors.Default;
     }
 
@@ -1427,6 +1503,17 @@ sealed partial class MainForm : Form
             return;
         }
         if (h == Hit.CropBar) _pressedItem = CropItemAt(e.Location);
+        if (h == Hit.FaceBar)
+        {
+            _pressedItem = FaceItemAt(e.Location);
+            if (_pressedItem == FaceSliderItem)
+            {
+                _drag = Drag.FaceAmount;
+                Capture = true;
+                SetFaceAmountAt(e.X);
+                return;
+            }
+        }
         if (h == Hit.Clip && e.Clicks == 2) { StartTrim(_hitId); return; }
         if (_info != null && IsTimelineHit(h) && h != Hit.Junction)
         {
@@ -1475,7 +1562,7 @@ sealed partial class MainForm : Form
         base.OnMouseCaptureChanged(e);
         if (Capture || _drag == Drag.None) return;
         if (_drag == Drag.Crop) EndCropDrag();
-        else if (_drag == Drag.Volume) _drag = Drag.None;
+        else if (_drag is Drag.Volume or Drag.FaceAmount) _drag = Drag.None;
         else TimelineUp(_dragX);
     }
 
@@ -1483,7 +1570,7 @@ sealed partial class MainForm : Form
     {
         base.OnMouseUp(e);
         if (_drag == Drag.Crop) { EndCropDrag(); return; }
-        if (_drag == Drag.Volume) { _drag = Drag.None; Capture = false; return; }
+        if (_drag is Drag.Volume or Drag.FaceAmount) { _drag = Drag.None; Capture = false; Invalidate(); return; }
         if (_drag != Drag.None) { TimelineUp(e.X); return; }
         if (e.Button != MouseButtons.Left) return;
         if (_dragArmed)
@@ -1541,6 +1628,15 @@ sealed partial class MainForm : Form
             case Hit.More: ShowMenu(); break;
             case Hit.Pin: TogglePin(); break;
             case Hit.Export: Export(); break;
+            case Hit.Edit: SetEditing(true); break;
+            case Hit.Faces: ToggleFaceBar(); break;
+            case Hit.FaceBar:
+            {
+                int item = FaceItemAt(e.Location);
+                if (item == _pressedItem) FaceBarClick(item);
+                break;
+            }
+            case Hit.EditDone: SetEditing(false); break;
             case Hit.Min: WindowState = FormWindowState.Minimized; break;
             case Hit.Max: ToggleMaximize(); break;
             case Hit.Close: Close(); break;
@@ -1598,8 +1694,16 @@ sealed partial class MainForm : Form
                 ResetZoom(); return true;
         }
         Activity();
+        if (!_editing && _info != null && keyData is Keys.S or Keys.T or Keys.Delete or Keys.Back or (Keys.Shift | Keys.Delete) or (Keys.Shift | Keys.Back)
+                or (Keys.Control | Keys.Z) or (Keys.Control | Keys.Y) or (Keys.Control | Keys.Shift | Keys.Z) or Keys.I or Keys.O
+                or Keys.OemOpenBrackets or Keys.OemCloseBrackets or Keys.C or Keys.R or (Keys.Shift | Keys.R))
+        {
+            ShowToast("Click Edit (or press E) to edit");
+            return true;
+        }
         switch (keyData)
         {
+            case Keys.E: SetEditing(!_editing); return true;
             case Keys.C: ToggleCrop(); return true;
             case Keys.T: StartTrim(); return true;
             case Keys.Enter when Trimming: FinishTrim(keep: true); return true;
@@ -1655,15 +1759,29 @@ sealed partial class MainForm : Form
         ToolStripMenuItem Item(string text, Action a, string? keys = null, bool enabled = true) =>
             new(text, null, (_, _) => a()) { ShortcutKeyDisplayString = keys, Enabled = enabled };
         _menu.Items.Add(Item("Open video…", OpenDialog, "Ctrl+O"));
-        bool edit = has && !Trimming; // timeline edits wait for the trim to be kept or cancelled
-        _menu.Items.Add(Item("Add sound…", AddAudioDialog, null, edit));
+        bool edit = has && _editing && !Trimming; // timeline edits: in the editor, and not while trimming
+        _menu.Items.Add(Item(_editing ? "Back to the player" : "Edit video", () => SetEditing(!_editing), "E", has));
         _menu.Items.Add(Item("Export…", Export, "Ctrl+E", has));
         _menu.Items.Add(new ToolStripSeparator());
+        if (_editing) PopulateEditItems(Item, has, edit);
+        _menu.Items.Add(Item((_loop ? "✓  " : "     ") + "Loop", ToggleLoop, null, has));
+        _menu.Items.Add(Item("Reset zoom", ResetZoom, "Ctrl+0", _zoom > 1f));
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(Item("Keyboard shortcuts", () => { RevealCursor(); using var dlg = new ShortcutsDialog(); dlg.ShowDialog(this); }));
+        _menu.Items.Add(Item("Open crash log folder", CrashLog.OpenFolder));
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(Item($"About {AppInfo.Name}", () => { RevealCursor(); using var dlg = new AboutDialog(); dlg.ShowDialog(this); }));
+    }
+
+    /// <summary>The ⋯ menu's editing items (in the editor).</summary>
+    void PopulateEditItems(Func<string, Action, string?, bool, ToolStripMenuItem> Item, bool has, bool edit)
+    {
+        _menu.Items.Add(Item("Add sound…", AddAudioDialog, null, edit));
         _menu.Items.Add(Item("Undo", Undo, "Ctrl+Z", !Trimming && _undo.Count > 0));
         _menu.Items.Add(Item("Redo", Redo, "Ctrl+Y", !Trimming && _redo.Count > 0));
         _menu.Items.Add(Item("Split at the playhead", SplitHere, "S", edit && _tl.At(_pos) != null));
         _menu.Items.Add(Item(Trimming ? "Apply the trim" : "Trim…", () => StartTrim(), "T", has));
-        if (Trimming) _menu.Items.Add(Item("Cancel the trim", () => FinishTrim(keep: false), "Esc"));
+        if (Trimming) _menu.Items.Add(Item("Cancel the trim", () => FinishTrim(keep: false), "Esc", true));
         _menu.Items.Add(Item("Close gaps", CloseGaps, null, edit && _tl.HasGaps));
         if (edit && _tl.Clips.Count > 0)
         {
@@ -1678,13 +1796,7 @@ sealed partial class MainForm : Form
         _menu.Items.Add(Item("Reset rotation", () => Rotate(-_rot), null, has && _rot != 0));
         _menu.Items.Add(Item(_cropping ? "Finish cropping" : "Crop…", ToggleCrop, "C", has));
         _menu.Items.Add(Item("Remove crop", () => { ResetCrop(); FinishCrop(apply: true); }, null, has && HasCrop));
-        _menu.Items.Add(Item((_loop ? "✓  " : "     ") + "Loop", ToggleLoop, null, has));
-        _menu.Items.Add(Item("Reset zoom", ResetZoom, "Ctrl+0", _zoom > 1f));
         _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(Item("Keyboard shortcuts", () => { RevealCursor(); using var dlg = new ShortcutsDialog(); dlg.ShowDialog(this); }));
-        _menu.Items.Add(Item("Open crash log folder", CrashLog.OpenFolder));
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(Item($"About {AppInfo.Name}", () => { RevealCursor(); using var dlg = new AboutDialog(); dlg.ShowDialog(this); }));
     }
 
     void ShowMenu()
@@ -1741,6 +1853,7 @@ sealed partial class MainForm : Form
             return;
         }
         CloseFile();
+        _editing = false;
         _pb = pb;
         _info = pb.Info;
         _pb.Volume = _muted ? 0 : _volume;
@@ -1776,6 +1889,7 @@ sealed partial class MainForm : Form
         _dragBase = null;
         _dragId = -1;
         _trimming = false;
+        CloseFaces();
         _strip?.Dispose();
         _strip = null;
         _videoPeaks?.Dispose();
@@ -1802,6 +1916,7 @@ sealed partial class MainForm : Form
         RotateCrop(degrees);
         _zoom = 1f;
         _center = new PointF(0.5f, 0.5f);
+        if (_faceMode != FaceMode.Off) { StartFinder(); ApplyFaces(); }
         RenderFrame();
         ShowToast(_rot switch { 0 => "Original orientation", 90 => "Rotated 90° right", 180 => "Rotated 180°", _ => "Rotated 90° left" });
     }
@@ -1970,7 +2085,7 @@ sealed partial class MainForm : Form
         bool menuOpen = _menu.Visible || _clipMenu.Visible;
         if (_info != null && !mouseInside && _drag == Drag.None && !menuOpen && !_cropping) HideOverlayNow();
         bool restingOnUi = _ui > 0f && !_panning && (PanelRect.Contains(mouse) || WindowButtonsRect.Contains(mouse));
-        bool show = _info == null || _cropping || _drag != Drag.None || menuOpen || restingOnUi || Now - _lastActivity < HideAfterSeconds;
+        bool show = _info == null || _cropping || _faceBar || _drag != Drag.None || menuOpen || restingOnUi || Now - _lastActivity < HideAfterSeconds;
         float target = show ? 1f : 0f;
         if (_ui != target)
         {

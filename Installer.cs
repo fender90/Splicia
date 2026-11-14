@@ -209,11 +209,22 @@ static class Installer
             if (!FFmpegRuntime.IsPresent(srcFf))
                 throw new FileNotFoundException("The FFmpeg components weren't found. Run the full Splicia-Setup exe.");
             Directory.CreateDirectory(ffDir);
-            var files = Directory.GetFiles(srcFf);
+            // its faces folder (the face model) too
+            var files = Directory.GetFiles(srcFf, "*", SearchOption.AllDirectories);
             for (int i = 0; i < files.Length; i++)
             {
-                File.Copy(files[i], Path.Combine(ffDir, Path.GetFileName(files[i])), overwrite: true);
+                string target = Path.Combine(ffDir, Path.GetRelativePath(srcFf, files[i]));
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(files[i], target, overwrite: true);
                 Step("Installing FFmpeg…", 0.35 + 0.45 * (i + 1) / files.Length);
+            }
+            // A build keeps ONNX Runtime next to its exe; installed, it goes in the faces folder, where the app looks
+            foreach (var dll in new[] { "onnxruntime.dll", "onnxruntime_providers_shared.dll" })
+            {
+                string from = Path.Combine(Path.GetDirectoryName(src)!, dll);
+                if (!File.Exists(from)) continue;
+                Directory.CreateDirectory(Path.Combine(ffDir, "faces"));
+                File.Copy(from, Path.Combine(ffDir, "faces", dll), overwrite: true);
             }
         }
         if (!FFmpegRuntime.IsPresent(ffDir)) throw new FileNotFoundException("The FFmpeg components are incomplete.");
@@ -228,7 +239,7 @@ static class Installer
 
         Step("Adding to Settings → Apps…", 0.88);
         string scopeArg = scope == InstallScope.AllUsers ? " --allusers" : "";
-        long size = new FileInfo(exe).Length + Directory.GetFiles(ffDir).Sum(f => new FileInfo(f).Length);
+        long size = new FileInfo(exe).Length + Directory.GetFiles(ffDir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
         using (var k = Root(scope).CreateSubKey(UninstallKey))
         {
             k.SetValue("DisplayName", AppName);

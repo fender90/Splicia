@@ -2,6 +2,13 @@
 
 All notable changes to Splicia are listed here.
 
+## [1.0.9] - 2026-11-14
+
+### What's new
+
+- **A player first.** Videos open in a player: the picture, a compact timeline and the playback controls. Press **Edit** (or E) to open the editor, with the full timeline and every editing tool; **Done** takes you back to the player, with your edits.
+- **Hide faces.** In the editor, the Faces button blurs or pixelates every face in the video, found automatically: turned heads, profiles and tilted faces included. Pick Blur or Pixelate and set how strongly with the Amount slider. The preview hides faces as soon as they're found, and the export hides them the same way. Faces are found on your PC; nothing is uploaded.
+
 ## [1.0.8] - 2026-10-31
 
 ### Fixes
@@ -44,6 +51,7 @@ All notable changes to Splicia are listed here.
 
 - Several bug fixes.
 
+[1.0.9]: https://github.com/fender90/Splicia/releases/tag/v1.0.9
 [1.0.8]: https://github.com/fender90/Splicia/releases/tag/v1.0.8
 [1.0.7]: https://github.com/fender90/Splicia/releases/tag/v1.0.7
 [1.0.6]: https://github.com/fender90/Splicia/releases/tag/v1.0.6

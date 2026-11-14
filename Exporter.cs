@@ -31,6 +31,8 @@ sealed record TrimJob(MediaInfo Info, double Start, double End, int Rotation)
 
     /// <summary>The timeline to export (clips, gaps, transitions); null = just [Start, End) of the file.</summary>
     public EditList? Edit { get; init; }
+    /// <summary>Faces hidden (blurred or pixelated) in the picture; only with an <see cref="Edit"/>.</summary>
+    public FaceEffect? Faces { get; init; }
 
     /// <summary>True when exporting a timeline rather than one stretch of the file.</summary>
     public bool IsEdited => Edit != null;
@@ -59,6 +61,7 @@ static class Exporter
     /// <summary>Why "Original" (stream copy) isn't possible for this job, or null.</summary>
     public static string? OriginalUnavailableReason(TrimJob job)
     {
+        if (job.Faces != null) return "Hiding faces needs re-encoding: choose H.264 or HEVC.";
         if (job.IsEdited) return "Joining clips needs re-encoding: choose H.264 or HEVC.";
         if (job.Crop != null) return "Cropping needs re-encoding: choose H.264 or HEVC.";
         if (job.Rotation != 0 && !RotatableExtensions.Contains(OriginalExtension(job.Info)))
@@ -312,7 +315,7 @@ static class Exporter
     /// </summary>
     static string SplicedArguments(TrimJob job, ExportSettings s, HwEncoder? hw, List<Segment> segs, bool video, bool audio,
         string output, bool pcm = false, bool forJoining = false, string? graphFile = null, string[]? outputOptions = null,
-        EditList? music = null)
+        EditList? music = null, List<FaceMask>? faceMasks = null)
     {
         var info = job.Info;
         string pixFmt = info.BitDepth > 8 || info.IsHdr ? "yuv420p10le" : "yuv420p";
@@ -357,6 +360,26 @@ static class Exporter
                 // A video without sound still gets a (silent) sound track when the audio track has something.
                 atrim = info.HasAudio ? $"[{input}:a:0]{at}" : $"anullsrc=r=48000:cl=stereo,atrim=duration={S(seg.Length)}";
                 input++;
+                if (video && faceMasks != null && job.Faces is { } faces)
+                {
+                    // Faces hidden: a blurred (or pixelated) copy of the picture merged into it through the faces' mask,
+                    // which is read and cut exactly as the clip is (its file starts later in the video: seeking less).
+                    // The mask is made in the picture's own format (its plane sizes and bit depth) so the merge needs no
+                    // conversion and 10-bit / HDR pictures stay 10-bit.
+                    var mask = faceMasks.FirstOrDefault(m => m.Start <= seg.From && seg.To <= m.End)
+                        ?? throw new InvalidOperationException("The faces' mask doesn't cover a clip.");
+                    a.AddRange(new[] { "-ss", S(CutPoint(info, seg.From) - mask.Start), inArgs[2], inArgs[3], "-i", mask.Path });
+                    string gray = pixFmt == "yuv420p" ? "gray" : "gray10le", ar = S(sar);
+                    int cw = (bw + 1) / 2, ch = (bh + 1) / 2;
+                    vtrim += $",format={pixFmt},split[fb{k}][fx{k}];[fx{k}]{faces.Filter(bw, bh)}[fe{k}];" +
+                             $"[{input}:v:0]{vt},fps={info.Rate}:round=near,format={gray},split=3[my{k}][mu{k}][mv{k}];" +
+                             $"[my{k}]scale={bw}:{bh}:flags=bilinear,setsar={ar}[ly{k}];" +
+                             $"[mu{k}]scale={cw}:{ch}:flags=bilinear,setsar={ar}[lu{k}];" +
+                             $"[mv{k}]scale={cw}:{ch}:flags=bilinear,setsar={ar}[lv{k}];" +
+                             $"[ly{k}][lu{k}][lv{k}]mergeplanes=map0s=0:map0p=0:map1s=1:map1p=0:map2s=2:map2p=0:format={pixFmt}[fm{k}];" +
+                             $"[fb{k}][fe{k}][fm{k}]maskedmerge";
+                    input++;
+                }
             }
             if (video)
             {
@@ -606,6 +629,123 @@ static class Exporter
     /// </summary>
     static async Task RunSplicedAsync(TrimJob job, ExportSettings s, HwEncoder? hw, Action<double> progress, CancellationToken ct)
     {
+        if (job.Faces is not { } faces || job.Edit!.Parts.Count == 0)
+        {
+            await RunSplicedAsync(job, s, hw, progress, ct, null);
+            return;
+        }
+        // Hidden faces: the pass that finds them must be done (a share of the bar while it isn't); then their mask,
+        // beside the export while it runs. Off the window's thread: the mask is drawn frame by frame.
+        double find = faces.Finder.Done ? 0 : 0.4 * (1 - faces.Finder.Progress), start = find + 0.04;
+        string dir = Path.GetDirectoryName(Path.GetFullPath(s.OutputPath))!;
+        var files = new List<string>();
+        try
+        {
+            var masks = await Task.Run(() => WriteFaceMasksAsync(job, faces, dir, files, find, start, progress, ct), ct);
+            await RunSplicedAsync(job, s, hw, f => progress(start + (1 - start) * f), ct, masks);
+        }
+        finally { foreach (var f in files) TryDelete(f); }
+    }
+
+    /// <summary>A stretch of the faces' mask: its file, and the source's time of its first picture (on the frame grid) and of its end.</summary>
+    sealed record FaceMask(string Path, double Start, double End);
+
+    /// <summary>
+    /// The faces' mask, for the stretches of the file the export uses (nearby ones together): one grey picture per frame
+    /// of the file's frame grid, a quarter of the size, white where faces are hidden (soft-edged), turned as ffmpeg
+    /// decodes the file; lossless (FFV1), so each clip of the export can read its part of it (see
+    /// <see cref="SplicedArguments"/>). The files are listed in <paramref name="files"/> as they're made. Waiting for the
+    /// faces moves the bar from 0 to <paramref name="found"/>, writing the mask from there to <paramref name="written"/>.
+    /// </summary>
+    static async Task<List<FaceMask>> WriteFaceMasksAsync(TrimJob job, FaceEffect faces, string dir, List<string> files,
+        double found, double written, Action<double> progress, CancellationToken ct)
+    {
+        var finder = faces.Finder;
+        double from = finder.Progress;
+        while (!finder.Completion.IsCompleted)
+        {
+            progress(found * Math.Clamp((finder.Progress - from) / Math.Max(1e-6, 1 - from), 0, 1));
+            await Task.WhenAny(finder.Completion, Task.Delay(250, ct)).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+        }
+        if (finder.Error is string error) throw new InvalidOperationException("Couldn't look for the faces: " + error);
+        if (!finder.Done) throw new InvalidOperationException("The search for faces stopped before it finished. Try exporting again.");
+        progress(found);
+
+        var info = job.Info;
+        var rate = info.Rate.Split('/');
+        double num = double.Parse(rate[0], Inv), den = rate.Length > 1 ? double.Parse(rate[1], Inv) : 1;
+        // The frames each part reads (with its handles), a few to spare; parts less than a second apart share a file.
+        long last = (long)Math.Ceiling(info.Duration * num / den) + 2;
+        var spans = new List<(long First, long End)>();
+        foreach (var part in job.Edit!.Parts.OrderBy(x => x.From - x.HandleIn))
+        {
+            long a = Math.Max(0, (long)Math.Floor((part.From - part.HandleIn) * num / den) - 3);
+            long b = Math.Min(last, (long)Math.Ceiling((part.To + part.HandleOut) * num / den) + 4);
+            if (spans.Count > 0 && a <= spans[^1].End + (long)Math.Ceiling(num / den)) spans[^1] = (spans[^1].First, Math.Max(spans[^1].End, b));
+            else spans.Add((a, Math.Max(a + 1, b)));
+        }
+        long total = spans.Sum(x => x.End - x.First), done = 0;
+
+        bool turned = info.Rotation % 180 == 90;
+        int bw = turned ? info.Height : info.Width, bh = turned ? info.Width : info.Height;
+        int mw = Math.Max(2, bw / 4 & ~1), mh = Math.Max(2, bh / 4 & ~1);
+        var picture = new byte[mw * mh];
+        var masks = new List<FaceMask>();
+        foreach (var (first, end) in spans)
+        {
+            string path = Path.Combine(dir, $".splicia-{Guid.NewGuid():N}-faces.mkv");
+            files.Add(path);
+            var psi = new ProcessStartInfo(FFmpegRuntime.FFmpegExe,
+                $"-hide_banner -loglevel error -y -f rawvideo -pix_fmt gray -s {mw}x{mh} -framerate {info.Rate} -i - -c:v ffv1 -g 1 \"{path}\"")
+            {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardError = true,
+            };
+            using var p = Process.Start(psi)!;
+            var errors = p.StandardError.ReadToEndAsync(ct);
+            bool broken = false;
+            try
+            {
+                var stdin = p.StandardInput.BaseStream;
+                for (long k = first; k < end; k++, done++)
+                {
+                    if (done % 64 == 0) progress(found + (written - found) * done / total);
+                    faces.DrawMask(picture, mw, mh, k * den / num, info.Rotation);
+                    await stdin.WriteAsync(picture, ct).ConfigureAwait(false);
+                }
+                stdin.Close();
+                await p.WaitForExitAsync(ct).ConfigureAwait(false);
+            }
+            catch (IOException) when (!ct.IsCancellationRequested)
+            {
+                // ffmpeg stopped reading (a full disk, say): what it says is the reason
+                broken = true;
+                if (!p.WaitForExit(10000)) Kill(p);
+            }
+            catch (OperationCanceledException)
+            {
+                Kill(p); // and gone, so its file can be deleted
+                throw;
+            }
+            if (broken || p.ExitCode != 0)
+            {
+                string why = (await errors.ConfigureAwait(false)).Trim();
+                throw new InvalidOperationException("Couldn't write the faces' mask" + (why.Length > 0 ? ": " + why : "."));
+            }
+            File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.Hidden);
+            masks.Add(new FaceMask(path, first * den / num, end * den / num));
+        }
+        progress(written);
+        return masks;
+
+        static void Kill(Process p)
+        {
+            try { p.Kill(); p.WaitForExit(10000); } catch (InvalidOperationException) { }
+        }
+    }
+
+    static async Task RunSplicedAsync(TrimJob job, ExportSettings s, HwEncoder? hw, Action<double> progress, CancellationToken ct, List<FaceMask>? faceMasks)
+    {
         var info = job.Info;
         var edit = job.Edit!;
         bool sound = s.IncludeAudio && (info.HasAudio || edit.Music.Count > 0);
@@ -619,7 +759,7 @@ static class Exporter
         {
             // In one run the audio track is mixed in there; in several, when the runs are joined.
             var music = runs.Count == 1 ? edit : null;
-            string args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining, music: music);
+            string args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining, music: music, faceMasks: faceMasks);
             if (args.Length <= MaxInlineArguments)
             {
                 await RunFfmpegAsync(args, RunLength(segs), report, ct);
@@ -628,7 +768,7 @@ static class Exporter
             string graph = Path.Combine(dir, $".splicia-{Guid.NewGuid():N}.txt");
             try
             {
-                args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining, graph, music: music);
+                args = SplicedArguments(job, s, hw, segs, video, audio, output, pcm, joining, graph, music: music, faceMasks: faceMasks);
                 File.SetAttributes(graph, File.GetAttributes(graph) | FileAttributes.Hidden);
                 await RunFfmpegAsync(args, RunLength(segs), report, ct);
             }

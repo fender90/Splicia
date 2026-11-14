@@ -11,21 +11,21 @@ namespace Splicia;
 /// </summary>
 static class TimelineUiTests
 {
-    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] internal static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     const BindingFlags Any = BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public;
-    static object? Get(object o, string n) => o.GetType().GetField(n, Any) is FieldInfo fi ? fi.GetValue(o) : o.GetType().GetProperty(n, Any)!.GetValue(o);
-    static void Set(object o, string n, object? v) => o.GetType().GetField(n, Any)!.SetValue(o, v);
-    static object? Call(object o, string n, params object?[] a) => o.GetType().GetMethods(Any).First(m => m.Name == n && m.GetParameters().Length == a.Length).Invoke(o, a);
+    internal static object? Get(object o, string n) => o.GetType().GetField(n, Any) is FieldInfo fi ? fi.GetValue(o) : o.GetType().GetProperty(n, Any)!.GetValue(o);
+    internal static void Set(object o, string n, object? v) => o.GetType().GetField(n, Any)!.SetValue(o, v);
+    internal static object? Call(object o, string n, params object?[] a) => o.GetType().GetMethods(Any).First(m => m.Name == n && m.GetParameters().Length == a.Length).Invoke(o, a);
 
-    static void Pump(double s)
+    internal static void Pump(double s)
     {
         var end = DateTime.UtcNow.AddSeconds(s);
         while (DateTime.UtcNow < end) { Application.DoEvents(); Thread.Sleep(5); }
     }
 
-    static void Snap(Form f, string name)
+    internal static void Snap(Form f, string name)
     {
         var t = (System.Windows.Forms.Timer)Get(f, "_timer")!;
         t.Stop();
@@ -37,10 +37,10 @@ static class TimelineUiTests
         Console.WriteLine($"  saved {name}.png");
     }
 
-    static void Mouse(Form f, string m, PointF p, MouseButtons b = MouseButtons.Left) =>
+    internal static void Mouse(Form f, string m, PointF p, MouseButtons b = MouseButtons.Left) =>
         f.GetType().GetMethod(m, Any)!.Invoke(f, new object[] { new MouseEventArgs(b, 1, (int)Math.Round(p.X), (int)Math.Round(p.Y), 0) });
 
-    static void Drag(Form f, PointF from, PointF to, bool release = true)
+    internal static void Drag(Form f, PointF from, PointF to, bool release = true)
     {
         Set(f, "_ui", 1f);
         Mouse(f, "OnMouseMove", from);
@@ -50,19 +50,19 @@ static class TimelineUiTests
         if (release) Mouse(f, "OnMouseUp", to);
     }
 
-    static void Click(Form f, PointF p) => Drag(f, p, p);
+    internal static void Click(Form f, PointF p) => Drag(f, p, p);
 
-    static bool Key(Form f, Keys k) => (bool)f.GetType().GetMethod("ProcessCmdKey", Any)!.Invoke(f, new object[] { new Message(), k })!;
+    internal static bool Key(Form f, Keys k) => (bool)f.GetType().GetMethod("ProcessCmdKey", Any)!.Invoke(f, new object[] { new Message(), k })!;
 
-    static Timeline Tl(Form f) => (Timeline)Get(f, "_tl")!;
-    static string Show(Timeline t) => string.Join(" ", t.Clips.Select(c => $"#{c.Id}[{c.In:0.##},{c.Out:0.##})@{c.Start:0.##}")) +
+    internal static Timeline Tl(Form f) => (Timeline)Get(f, "_tl")!;
+    internal static string Show(Timeline t) => string.Join(" ", t.Clips.Select(c => $"#{c.Id}[{c.In:0.##},{c.Out:0.##})@{c.Start:0.##}")) +
         (t.Music.Count > 0 ? "  ♪ " + string.Join(" ", t.Music.Select(m => $"#{m.Id}[{m.In:0.##},{m.Out:0.##})@{m.Start:0.##}")) : "");
-    static float X(Form f, double t) => (float)Call(f, "X", t)!;
-    static Rectangle R(Form f, string name) => (Rectangle)Get(f, name)!;
-    static PointF ClipCentre(Form f, Clip c) => new(X(f, (c.Start + c.End) / 2), R(f, "VideoRect").Top + R(f, "VideoRect").Height / 2f);
-    static double Pos(Form f) => (double)Get(f, "_pos")!;
-    static Rectangle Button(Form f, string hit) => (Rectangle)Call(f, "Rect", Enum.Parse(typeof(MainForm).GetNestedType("Hit", Any)!, hit))!;
-    static PointF Centre(Rectangle r) => new(r.X + r.Width / 2f, r.Y + r.Height / 2f);
+    internal static float X(Form f, double t) => (float)Call(f, "X", t)!;
+    internal static Rectangle R(Form f, string name) => (Rectangle)Get(f, name)!;
+    internal static PointF ClipCentre(Form f, Clip c) => new(X(f, (c.Start + c.End) / 2), R(f, "VideoRect").Top + R(f, "VideoRect").Height / 2f);
+    internal static double Pos(Form f) => (double)Get(f, "_pos")!;
+    internal static Rectangle Button(Form f, string hit) => (Rectangle)Call(f, "Rect", Enum.Parse(typeof(MainForm).GetNestedType("Hit", Any)!, hit))!;
+    internal static PointF Centre(Rectangle r) => new(r.X + r.Width / 2f, r.Y + r.Height / 2f);
 
     public static void Run()
     {
@@ -80,11 +80,22 @@ static class TimelineUiTests
         Call(form, "Open", Path.Combine(H.Vids, "t7_counter.mp4"));
         Call(form, "SetVolume", 0f);
         Pump(2.0);
+        // A video opens in the player: a compact timeline, no editing tools, Edit where Export is; S does nothing there.
+        var playerPanel = R(form, "PanelRect");
+        H.Check(!(bool)Get(form, "_editing")! && Button(form, "Split").IsEmpty && Button(form, "Export").IsEmpty && !Button(form, "Edit").IsEmpty
+            && playerPanel.Height > emptyPanel.Height && Call(form, "TimelineHit", Point.Round(Centre(R(form, "VideoRect"))))!.ToString()!.Contains("Track"),
+            $"a video opens in the player: panel {playerPanel.Height} px, Edit button {Button(form, "Edit")}");
+        Key(form, Keys.S);
+        H.Check(Tl(form).Clips.Count == 1, "S does nothing in the player");
+        Snap(form, "u0b_player");
+        Click(form, Centre(Button(form, "Edit")));
+        Pump(0.2);
         var fullPanel = R(form, "PanelRect");
         var fullPlay = Button(form, "Play");
         H.Check(emptyPanel.Bottom == fullPanel.Bottom && emptyPanel.Height < fullPanel.Height * 0.6 && emptyPlay.Top > emptyPanel.Top + 60
-            && emptyPlay.Bottom < emptyPanel.Bottom && fullPlay.Top > R(form, "MusicRect").Bottom,
-            $"no video: panel {emptyPanel.Height} px high, play button at {emptyPlay.Top}; a video: {fullPanel.Height} px, play button below the timeline");
+            && emptyPlay.Bottom < emptyPanel.Bottom && fullPlay.Top > R(form, "MusicRect").Bottom && (bool)Get(form, "_editing")!
+            && fullPanel.Height > playerPanel.Height && !Button(form, "Split").IsEmpty && !Button(form, "EditDone").IsEmpty,
+            $"no video: panel {emptyPanel.Height} px high, play button at {emptyPlay.Top}; Edit opens the editor: {fullPanel.Height} px, play button below the timeline");
         double fd = 1 / 30.0;
 
         // The whole video dragged right 3 s (a gap at the start), then back to 0: the timeline is 10 s again.
@@ -490,6 +501,11 @@ static class TimelineUiTests
             && Gap("Crop", "Vol") >= 4,
             $"smallest window: undo {Btn("Undo")}, add sound {Btn("AddAudio")}, crop {Btn("Crop")}, volume {Btn("Vol")}");
         Snap(form, "u7_smallest_window");
+
+        // Done goes back to the player (the edits stay).
+        var edited = Tl(form);
+        Click(form, Centre(Button(form, "EditDone")));
+        H.Check(!(bool)Get(form, "_editing")! && ReferenceEquals(Tl(form), edited) && Button(form, "Crop").IsEmpty, "Done goes back to the player, the edits kept");
 
         // A WebM at an odd size opens, shows its thumbnails and plays (its pictures converted without overrunning their buffers).
         Call(form, "Open", Path.Combine(H.Vids, "t9_vp8_odd.webm"));

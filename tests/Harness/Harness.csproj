@@ -13,11 +13,14 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FFmpeg.AutoGen" Version="8.1.0" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.20.1" />
     <Compile Include="..\..\*.cs" Exclude="..\..\Program.cs" />
     <EmbeddedResource Include="..\..\app.ico" LogicalName="Splicia.app.ico" />
     <EmbeddedResource Include="..\..\hero.jpg" LogicalName="Splicia.hero.jpg" />
     <EmbeddedResource Include="..\..\LICENSE.txt" LogicalName="Splicia.LICENSE.txt" />
     <EmbeddedResource Include="..\..\THIRD-PARTY-NOTICES.txt" LogicalName="Splicia.THIRD-PARTY-NOTICES.txt" />
     <None Include="..\..\ffmpeg\*.dll;..\..\ffmpeg\ffmpeg.exe;..\..\ffmpeg\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" Link="ffmpeg\%(Filename)%(Extension)" />
+    <None Include="..\..\faces\centerface.onnx" CopyToOutputDirectory="PreserveNewest" Link="ffmpeg\faces\centerface.onnx" />
+    <None Include="assets\*.jpg" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

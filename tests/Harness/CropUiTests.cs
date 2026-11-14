@@ -66,6 +66,7 @@ static class CropUiTests
         ShowWindow(form.Handle, 4); // SW_SHOWNOACTIVATE
         Call(form, "Open", Path.Combine(H.Vids, "t7_counter.mp4"));
         Pump(2.0);
+        Call(form, "SetEditing", true); // crop is an editing tool
         Call(form, "GoTo", 4.0);
         Pump(0.8);
 

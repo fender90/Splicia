@@ -25,6 +25,7 @@ sealed class ShortcutsDialog : PagedWindow
             ("Ctrl + 0", "Reset zoom"),
             ("F, F11, double-click", "Fullscreen"),
             ("P", "Pin / unpin the control panel"),
+            ("E", "Edit / back to the player"),
             ("Esc", "Leave fullscreen"),
         }),
         ("ROTATE & CROP", new[]

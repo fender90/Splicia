@@ -30,9 +30,13 @@ sealed class Lane : IDisposable
     double _backoff;
     bool _firstFrame;
 
-    public Lane(MediaSource src, (int W, int H) size, Func<VideoFrame> rent, Action<VideoFrame> recycle, string name)
+    readonly Action<VideoFrame>? _process;
+
+    /// <param name="process">Done to every frame as it's decoded (hiding faces), on the lane's thread.</param>
+    public Lane(MediaSource src, (int W, int H) size, Func<VideoFrame> rent, Action<VideoFrame> recycle, string name, Action<VideoFrame>? process = null)
     {
         Src = src;
+        _process = process;
         _info = src.Info;
         _size = size;
         _rent = rent;
@@ -172,6 +176,7 @@ sealed class Lane : IDisposable
         }
         var f = _rent();
         Src.ConvertVideo(f, _size.W, _size.H);
+        _process?.Invoke(f);
         f.Exact = true;
         lock (_gate)
         {

@@ -105,7 +105,8 @@ sealed class ExportDialog : PagedWindow
 
         // Back-and-forth loop, with how many times to repeat it on the same row
         var loop = AddControl(new ToggleSwitch("Back-and-forth loop", _boomerang,
-            _job.IsEdited ? "Only for a single clip without added sound or fades." : BoomerangDescription()), P(46), 20);
+            _job.IsEdited ? (_job.Faces != null ? "Not while faces are hidden." : "Only for a single clip without added sound or fades.")
+                : BoomerangDescription()), P(46), 20);
         loop.Enabled = !_job.IsEdited;
         int segW = P(200);
         var repeats = new Segmented("1×", "2×", "3×", "4×")
@@ -221,6 +222,8 @@ sealed class ExportDialog : PagedWindow
                 ? $"Encoding HEVC on your {_hw.Vendor} graphics." : $"Encoding {(settings.Format == ExportFormat.Hevc ? "HEVC" : "H.264")}.",
             Small, Theme.Faint, 4);
         if (settings.Boomerang) _status.Text = "Making the back-and-forth loop. " + _status.Text;
+        if (_job.Faces is { Finder.Error: null } faces)
+            _status.Text = (faces.Finder.Done ? "Hiding faces. " : "Finding the faces first, then hiding them. ") + _status.Text;
         Footer(null, Button("Cancel", PillButton.Kind.Secondary, () => _cts?.Cancel()));
 
         _cts = new CancellationTokenSource();
