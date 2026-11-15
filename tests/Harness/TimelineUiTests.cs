@@ -519,4 +519,129 @@ static class TimelineUiTests
         Snap(form, "u10_webm");
         form.Close();
     }
+
+    static MainForm OpenOffscreen(string name)
+    {
+        var form = new MainForm(null) { StartPosition = FormStartPosition.Manual, Location = new Point(-31900, -31900), ClientSize = new Size(1280, 860) };
+        ShowWindow(form.Handle, 4); // SW_SHOWNOACTIVATE
+        Call(form, "Open", Path.Combine(H.Vids, name));
+        Call(form, "SetVolume", 0f);
+        Pump(1.0);
+        return form;
+    }
+
+    /// <summary>The picture shown after a key, once it has come (or the one before, after half a second).</summary>
+    static VideoFrame? After(Form form, Keys key)
+    {
+        var before = Get(form, "_shown");
+        Key(form, key);
+        var until = DateTime.UtcNow.AddSeconds(0.5);
+        while (DateTime.UtcNow < until && ReferenceEquals(Get(form, "_shown"), before)) Pump(0.01);
+        Pump(0.02);
+        return (VideoFrame?)Get(form, "_shown");
+    }
+
+    /// <summary>
+    /// Frame by frame with → and ←, where the frames aren't on the frame grid: a 60 fps Matroska file (timestamps in
+    /// whole milliseconds) and one with a variable frame rate (every fifth frame left out). Each press moves the playhead;
+    /// the pictures go one way, and none is skipped.
+    /// </summary>
+    public static void Stepping()
+    {
+        foreach (var (name, frames) in new[] { ("t5_noaudio.mkv", 40), ("t14_vfr.mkv", 30) })
+        {
+            var form = OpenOffscreen(name);
+            double fd = (double)Get(form, "FrameDur")!;
+            var times = new List<double> { ((VideoFrame)Get(form, "_shown")!).Time };
+            var pos = new List<double> { Pos(form) };
+            for (int i = 0; i < frames; i++)
+            {
+                times.Add(After(form, Keys.Right)?.Time ?? double.NaN);
+                pos.Add(Pos(form));
+            }
+            var steps = times.Zip(times.Skip(1), (a, b) => b - a).ToList();
+            int stuck = 0, run = 0;
+            foreach (var s in steps) { run = s < 1e-6 ? run + 1 : 0; stuck = Math.Max(stuck, run); }
+            bool moved = pos.Zip(pos.Skip(1)).All(p => p.Second > p.First + fd / 2);
+            // A frame left out shows its predecessor for two steps (once), then the next frame two frames on: a long step
+            // beside a repeat. Never more repeats than that, and no long step without one (a frame skipped).
+            bool Fine(List<double> d) => d.Select((s, i) => s >= -1e-6 && (s < 1.5 * fd + 1e-3
+                || s < 2.5 * fd && (i > 0 && d[i - 1] < 1e-6 || i + 1 < d.Count && d[i + 1] < 1e-6))).All(ok => ok);
+            bool forward = Fine(steps) && stuck <= (name == "t14_vfr.mkv" ? 1 : 0);
+            var back = new List<double> { times[^1] };
+            for (int i = 0; i < 10; i++) back.Add(After(form, Keys.Left)?.Time ?? double.NaN);
+            bool backward = Fine(back.Zip(back.Skip(1), (a, b) => a - b).ToList());
+            H.Check(moved && forward && backward,
+                $"frame by frame, {name}: {frames} steps forward to {times[^1]:0.###} s (the longest {steps.Max() * 1000:0} ms, {stuck} repeats in a row), the playhead moving each time; 10 back to {back[^1]:0.###} s");
+
+            // At the end: → stays on the last frame (the playhead on its start), ← goes back one
+            double end = Tl(form).End;
+            Call(form, "GoTo", end);
+            Pump(0.3);
+            var last = After(form, Keys.Right)?.Time ?? double.NaN;
+            double atEnd = Pos(form);
+            var again = After(form, Keys.Right)?.Time ?? double.NaN;
+            var before = After(form, Keys.Left)?.Time ?? double.NaN;
+            H.Check(Math.Abs(atEnd - Math.Floor((end - 1e-6) / fd) * fd) < 1e-6 && Math.Abs(Pos(form) - (atEnd - fd)) < 1e-6 && again == last && before < last,
+                $"frame by frame at the end, {name}: the playhead stops on the last frame's start ({atEnd:0.###} of {end:0.###} s), → stays, ← goes back to {before:0.###} s");
+            form.Close();
+        }
+    }
+
+    /// <summary>
+    /// A clip a few pixels wide (split near the start of a 20 s video) can be selected by clicking anywhere on it, at the
+    /// top where its fade handles are, beside the transition dot, or on its waveform.
+    /// </summary>
+    public static void NarrowClip()
+    {
+        var form = OpenOffscreen("t1_h264_1080p30.mp4");
+        Call(form, "SetEditing", true);
+        Call(form, "GoTo", 0.4);
+        Pump(0.2);
+        Key(form, Keys.S);
+        Pump(0.2);
+        var tl = Tl(form);
+        int left = tl.Clips[0].Id, right = tl.Clips[1].Id;
+        var v = R(form, "VideoRect");
+        var w = R(form, "WaveRect");
+        float x0 = X(form, 0), x1 = X(form, 0.4);
+        var missed = new List<string>();
+        int tried = 0;
+        foreach (float fx in new[] { 0.1f, 0.3f, 0.5f, 0.7f, 0.85f })
+            foreach (var (row, y) in new[] { ("top", v.Top + 3f), ("middle", v.Top + v.Height / 2f), ("bottom", v.Bottom - 4f), ("waveform", w.Top + w.Height / 2f) })
+            {
+                Set(form, "_selClip", right);
+                var p = new PointF(x0 + (x1 - x0) * fx, y);
+                if (Math.Sqrt((p.X - x1) * (p.X - x1) + (p.Y - v.Bottom) * (p.Y - v.Bottom)) <= 9) continue; // on the transition dot
+                Call(form, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, (int)p.X, (int)p.Y, 0)); // hovering it first
+                Click(form, p);
+                Pump(0.05);
+                tried++;
+                if ((int)Get(form, "_selClip")! != left) missed.Add($"{row} at {fx:P0} ({Call(form, "HitTest", Point.Round(p))})");
+            }
+        H.Check(missed.Count == 0 && Tl(form).SameAs(tl),
+            $"a clip {x1 - x0:0} px wide before a cut: {tried - missed.Count}/{tried} clicks select it" + (missed.Count > 0 ? "; missed " + string.Join(", ", missed) : ""));
+
+        // Narrower than its two fade handles (they share its middle): hovering, selecting and drawing it work
+        Call(form, "GoTo", 0.13);
+        Pump(0.2);
+        Key(form, Keys.S);
+        Pump(0.2);
+        var tiny = Tl(form).Clips[0];
+        float tx0 = X(form, tiny.Start), tx1 = X(form, tiny.End);
+        string? error = null;
+        try
+        {
+            var mid = new PointF((tx0 + tx1) / 2, v.Top + v.Height / 2f);
+            Call(form, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, (int)mid.X, (int)mid.Y, 0));
+            Click(form, mid);
+            Call(form, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, (int)mid.X, (int)v.Top + 3, 0));
+            using var bmp = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+            form.DrawToBitmap(bmp, new Rectangle(Point.Empty, form.ClientSize));
+        }
+        catch (Exception ex) { error = (ex.InnerException ?? ex).Message; }
+        H.Check(error == null && (int)Get(form, "_selClip")! == tiny.Id,
+            $"a clip {tx1 - tx0:0.#} px wide: hovered, clicked (selected) and drawn{(error != null ? ": " + error : "")}");
+        form.Close();
+    }
 }

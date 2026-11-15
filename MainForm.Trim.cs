@@ -20,6 +20,9 @@ sealed partial class MainForm
     /// <summary>The playhead's range.</summary>
     double PosEnd => _tl.End;
 
+    /// <summary>The furthest the playhead goes: the start of the last frame (on the frame grid, as positions are).</summary>
+    double LastPos => Math.Max(0, Math.Floor((PosEnd - 1e-6) / FrameDur) * FrameDur);
+
     /// <summary>What playing plays: the timeline, or in trim mode just the selection (as it will be), from <see cref="PlayBase"/>.</summary>
     EditList PlayList() => Trimming ? EditList.Of(Kept()) : EditList.Of(_tl);
     double PlayBase => Trimming ? _trimIn : 0;

@@ -76,8 +76,10 @@ sealed partial class MainForm
     (PointF In, PointF Out) FadeHandles(RectangleF r, double fadeIn, double fadeOut)
     {
         float inset = P(7), y = r.Top + P(5);
-        float xi = Math.Clamp(r.Left + (float)(fadeIn / _viewLen * TrackWidth), r.Left + inset, r.Right - inset);
-        float xo = Math.Clamp(r.Right - (float)(fadeOut / _viewLen * TrackWidth), r.Left + inset, r.Right - inset);
+        float lo = r.Left + inset, hi = r.Right - inset;
+        if (lo > hi) lo = hi = r.Left + r.Width / 2; // a clip narrower than two handles: both in its middle
+        float xi = Math.Clamp(r.Left + (float)(fadeIn / _viewLen * TrackWidth), lo, hi);
+        float xo = Math.Clamp(r.Right - (float)(fadeOut / _viewLen * TrackWidth), lo, hi);
         return (new PointF(xi, y), new PointF(xo, y));
     }
 
@@ -102,7 +104,8 @@ sealed partial class MainForm
         var video = Rectangle.FromLTRB(VideoRect.Left, VideoRect.Top, VideoRect.Right, WaveRect.Bottom);
         if (p.Y <= video.Bottom + P(3))
         {
-            foreach (var (a, _, at) in Junctions()) if (Near(p, at, P(10))) return (Hit.Junction, a.Id);
+            // The transition dot just where it's drawn: a clip a few pixels wide beside it is still clickable.
+            foreach (var (a, _, at) in Junctions()) if (Near(p, at, P(8))) return (Hit.Junction, a.Id);
             foreach (var c in _tl.Clips)
             {
                 var r = ClipRect(c);
@@ -543,7 +546,7 @@ sealed partial class MainForm
         if (_tl.Find(_selClip) == null) _selClip = -1;
         if (_tl.FindMusic(_selMusic) == null) _selMusic = -1;
         UpdateView();
-        _pos = Math.Clamp(_pos, 0, Math.Max(0, _tl.End - FrameDur / 2));
+        _pos = Math.Clamp(_pos, 0, LastPos);
         if (_playing && _pb != null) _pb.Play(_pos, EditList.Of(_tl), _loop);
         else ShowFrameAt(_pos);
         Invalidate();
@@ -701,11 +704,12 @@ sealed partial class MainForm
                 _selClip = -1;
                 _drag = h == Hit.MusicStart ? Drag.MusicStart : Drag.MusicEnd;
                 break;
-            case Hit.ClipFadeIn or Hit.MusicFadeIn:
-                _drag = Drag.FadeIn;
-                break;
-            case Hit.ClipFadeOut or Hit.MusicFadeOut:
-                _drag = Drag.FadeOut;
+            case Hit.ClipFadeIn or Hit.MusicFadeIn or Hit.ClipFadeOut or Hit.MusicFadeOut:
+                // A fade handle shows on the clip under the pointer too, and on a narrow clip covers its top: pressing
+                // one selects its clip (a click without dragging just selects it).
+                if (h is Hit.ClipFadeIn or Hit.ClipFadeOut) { _selClip = _hitId; _selMusic = -1; }
+                else { _selMusic = _hitId; _selClip = -1; }
+                _drag = h is Hit.ClipFadeIn or Hit.MusicFadeIn ? Drag.FadeIn : Drag.FadeOut;
                 break;
             case Hit.TrimStart:
                 _trimGrab = TimeAt(e.X) - _trimIn;
@@ -729,7 +733,7 @@ sealed partial class MainForm
 
     void ScrubTo(int x, bool exact)
     {
-        _pos = Math.Clamp(_tl.Snap(TimeAt(x)), 0, Math.Max(0, PosEnd - FrameDur / 2));
+        _pos = Math.Clamp(_tl.Snap(TimeAt(x)), 0, LastPos);
         ShowFrameAt(_pos, exact);
     }
 
@@ -737,7 +741,10 @@ sealed partial class MainForm
     void TimelineDrag(int x)
     {
         _dragX = x;
-        if (!_moved && Math.Abs(x - _downX) < SystemInformation.DragSize.Width && _drag is Drag.ClipMove or Drag.MusicMove or Drag.TrimStart or Drag.TrimEnd or Drag.TrimMove) return;
+        // Nothing changes until the pointer has really moved: a click on a fade handle or a sound's edge (to select it)
+        // mustn't set a fade or trim the sound where it was clicked.
+        if (!_moved && Math.Abs(x - _downX) < SystemInformation.DragSize.Width && _drag is Drag.ClipMove or Drag.MusicMove or Drag.TrimStart
+            or Drag.TrimEnd or Drag.TrimMove or Drag.FadeIn or Drag.FadeOut or Drag.MusicStart or Drag.MusicEnd) return;
         _moved = true;
         var b = _dragBase ?? _tl;
         // Moves, and a sound's end, may go past the end of the timeline: the pointer isn't held to the track there.
@@ -914,15 +921,22 @@ sealed partial class MainForm
 
     // ───────────────────────── playing and exporting ─────────────────────────
 
-    /// <summary>Shows the frame at timeline time <paramref name="t"/>: the clip's frame there, or black in a gap.</summary>
+    /// <summary>
+    /// Shows the picture at timeline time <paramref name="t"/> (paused; or, not <paramref name="exact"/>, a quick one
+    /// while dragging): the clip's frame on screen halfway through that frame's time, or black in a gap. A file's frames
+    /// needn't start exactly on the frame grid (a variable frame rate; timestamps rounded, as Matroska's are, to whole
+    /// milliseconds), and the one starting a hair after a grid point would otherwise be missed: stepping forward showed
+    /// the same frame again. Never past where the export cuts the clip (half a frame before its end).
+    /// </summary>
     void ShowFrameAt(double t, bool exact = true)
     {
         if (_pb == null) return;
         if (_tl.At(t) is Clip c)
         {
             double source = c.In + (t - c.Start);
-            if (exact) _pb.ShowAt(source, c.Start - c.In);
-            else _pb.ShowNear(source, c.Start - c.In);
+            double middle = Math.Min(source + FrameDur / 2, Math.Max(source, c.Out - FrameDur / 2 - 1e-4));
+            if (exact) _pb.ShowAt(middle, c.Start - c.In);
+            else _pb.ShowNear(middle, c.Start - c.In);
         }
         else _pb.ShowBlack(t);
     }

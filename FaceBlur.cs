@@ -765,7 +765,7 @@ sealed class FaceEffect
                 byte* p = data + (ry0 + y) * stride + rx0 * 4;
                 for (int x = 0; x < w; x++, p += 4) { buf[0][y * w + x] = p[0]; buf[1][y * w + x] = p[1]; buf[2][y * w + x] = p[2]; }
             }
-            // A Gaussian, as three box blurs (as ffmpeg's gblur approximates it too)
+            // A Gaussian, as three box blurs (as the export's ffmpeg boxblur does; see Filter)
             foreach (int size in GaussBoxes(sigma, 3))
                 for (int c = 0; c < 3; c++)
                 {
@@ -868,7 +868,15 @@ sealed class FaceEffect
     }
 
     /// <summary>The ffmpeg filter that hides a whole <paramref name="w"/>×<paramref name="h"/> picture (the mask picks the faces).</summary>
-    public string Filter(int w, int h) => Mode == FaceMode.Pixelate
-        ? $"scale=trunc(iw/{Block}):trunc(ih/{Block}):flags=area,scale={w}:{h}:flags=neighbor"
-        : $"gblur=sigma={Sigma.ToString("0.###", CultureInfo.InvariantCulture)}";
+    public string Filter(int w, int h)
+    {
+        if (Mode == FaceMode.Pixelate) return $"scale=trunc(iw/{Block}):trunc(ih/{Block}):flags=area,scale={w}:{h}:flags=neighbor";
+        // Three box blurs, as the preview's, of the same spread (each a third of the variance). ffmpeg's gblur (one
+        // recursive pass) has a sharp middle that lets the face's features through: it looked weaker than the preview.
+        // The colour planes are half the size, so half the radius.
+        // (a radius must be under half the plane's shorter side)
+        int r = Math.Clamp((int)Math.Round(Math.Sqrt(Sigma * Sigma + 0.25) - 0.5), 0, Math.Max(0, (Math.Min(w, h) - 1) / 2));
+        int rc = Math.Clamp((int)Math.Round(r / 2.0, MidpointRounding.AwayFromZero), 0, Math.Max(0, (Math.Min((w + 1) / 2, (h + 1) / 2) - 1) / 2));
+        return $"boxblur=luma_radius={r}:luma_power=3:chroma_radius={rc}:chroma_power=3";
+    }
 }

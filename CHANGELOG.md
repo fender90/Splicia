@@ -9,6 +9,11 @@ All notable changes to Splicia are listed here.
 - **A player first.** Videos open in a player: the picture, a compact timeline and the playback controls. Press **Edit** (or E) to open the editor, with the full timeline and every editing tool; **Done** takes you back to the player, with your edits.
 - **Hide faces.** In the editor, the Faces button blurs or pixelates every face in the video, found automatically: faces in profile, turned away, tilted or looking down, and faces partly covered (a mask, a scarf, glasses), found from the person's body when the face itself is hard to see. Pick Blur or Pixelate and set how strongly with the Amount slider. The preview hides faces as soon as they're found, and the export hides them the same way. Faces are found on your PC; nothing is uploaded.
 
+### Fixes
+
+- Stepping frame by frame (→) could stay on the same frame in some videos: Matroska and WebM files, and phone videos whose frame rate varies.
+- A short clip before a cut was hard to select: clicks near the cut went to its fade handles or the transition dot. A click anywhere on a clip now selects it, and clicking a fade handle no longer sets a small fade.
+
 ## [1.0.8] - 2026-10-31
 
 ### Fixes

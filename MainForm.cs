@@ -40,7 +40,7 @@ sealed partial class MainForm : Form
     int _frameVersion;
     (int, RectangleF, Rectangle, Size) _viewKey;
 
-    double _pos;                 // timeline time of the frame on screen
+    double _pos;                 // the playhead: timeline time (paused, the frame on screen there)
     int _rot;                    // the user's rotation, clockwise
     bool _loop, _muted, _playing;
     float _volume = 1f;
@@ -2011,7 +2011,7 @@ sealed partial class MainForm : Form
     {
         if (_pb == null) return;
         Pause();
-        _pos = Math.Clamp(_tl.Snap(_pos + delta * FrameDur), 0, Math.Max(0, PosEnd - FrameDur / 2));
+        _pos = Math.Clamp(_tl.Snap(_pos + delta * FrameDur), 0, LastPos);
         ShowFrameAt(_pos);
         Invalidate(PanelRect);
     }
@@ -2025,7 +2025,7 @@ sealed partial class MainForm : Form
     void GoTo(double t)
     {
         if (_pb == null) return;
-        t = Math.Clamp(_tl.Snap(t), 0, Math.Max(0, PosEnd - FrameDur / 2));
+        t = Math.Clamp(_tl.Snap(t), 0, LastPos);
         _pos = t;
         if (_playing && (t < PlayBase || t >= PlayEnd)) Pause(); // trim mode: outside the part played
         if (_playing) _pb.Play(t - PlayBase, PlayList(), _loop);
@@ -2058,11 +2058,9 @@ sealed partial class MainForm : Form
                 if (f != null) Present(f, updatePos: true);
                 if (_pb.Ended) { Pause(); Activity(); }
             }
-            else if (_pb.TakeStill() is VideoFrame still)
-            {
-                bool exact = still.Exact && _drag == Drag.None;
-                Present(still, updatePos: exact);
-            }
+            // A paused picture leaves the playhead where it was put: moving it to the frame's own start (off the frame
+            // grid in some files) made the next step forward land on the same frame.
+            else if (_pb.TakeStill() is VideoFrame still) Present(still, updatePos: false);
         }
 
         // Hover hint after resting on a control

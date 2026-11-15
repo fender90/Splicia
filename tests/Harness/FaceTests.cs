@@ -124,6 +124,19 @@ static class FaceTests
                 var (inside, outside) = Compare(src, res, info.Width, info.Height, 1, finder.At(2.0));
                 H.Check(src.Length > 0 && res.Length == src.Length && inside.Detail < 0.45 && outside.Change < 3,
                     $"export, {mode}: detail in the faces down to {inside.Detail:P0}, the rest changed by {outside.Change:0.00} (of 255, encoding)");
+                if (mode == FaceMode.Blur)
+                {
+                    // ... and blurred as much as the preview: as little of each face's shape showing through (ffmpeg's
+                    // gblur, one recursive pass, let the eyes and mouth through where the preview's three box blurs don't)
+                    var shown = new VideoFrame();
+                    using (var dec = new MediaSource(file)) dec.DecodeVideoAt(2.0, false, shown, info.Width, info.Height);
+                    var plain = Luma(shown);
+                    new FaceEffect(finder, FaceMode.Blur, 60, info).Apply(shown);
+                    double inPreview = Shape(plain, Luma(shown), info.Width, info.Height, finder.At(2.0));
+                    double inExport = Shape(src, res, info.Width, info.Height, finder.At(2.0));
+                    H.Check(Math.Abs(inPreview - inExport) < 0.04,
+                        $"export, Blur, as strong as the preview: the faces' shape showing through {inExport:0.000} (preview {inPreview:0.000})");
+                }
             }
             catch (Exception ex) { H.Check(false, $"export, {mode}: {ex.Message}"); }
         }
@@ -258,6 +271,40 @@ static class FaceTests
         H.Check(!(bool)TimelineUiTests.Get(form, "_faceBar")! && ((TrimJob)TimelineUiTests.Call(form, "CurrentJob", (object?)null)!).Faces != null,
             "Done closes the bar; the faces stay hidden, in the player too");
         form.Close();
+    }
+
+    /// <summary>A BGRA frame's brightness (as ffmpeg's grey: Rec. 601 weights).</summary>
+    static byte[] Luma(VideoFrame f)
+    {
+        var y = new byte[f.Width * f.Height];
+        for (int i = 0; i < y.Length; i++)
+            y[i] = (byte)Math.Round(0.114 * f.Data[i * 4] + 0.587 * f.Data[i * 4 + 1] + 0.299 * f.Data[i * 4 + 2]);
+        return y;
+    }
+
+    /// <summary>
+    /// How much of the faces' shape (eyes, mouth, nose) shows through: the correlation of each face's middle half,
+    /// hidden, with the same before, averaged over the faces. Brightness and contrast don't count, only the shape.
+    /// </summary>
+    static double Shape(byte[] before, byte[] after, int w, int h, List<RectangleF> faces)
+    {
+        double sum = 0;
+        foreach (var f in faces)
+        {
+            int x0 = (int)((f.X + f.Width / 4) * w), x1 = (int)((f.X + 3 * f.Width / 4) * w);
+            int y0 = (int)((f.Y + f.Height / 4) * h), y1 = (int)((f.Y + 3 * f.Height / 4) * h);
+            double sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+            int n = 0;
+            for (int y = Math.Max(0, y0); y < Math.Min(h, y1); y++)
+                for (int x = Math.Max(0, x0); x < Math.Min(w, x1); x++)
+                {
+                    double a = before[y * w + x], b = after[y * w + x];
+                    sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b; n++;
+                }
+            double va = saa - sa * sa / n, vb = sbb - sb * sb / n;
+            sum += va > 0 && vb > 0 ? (sab - sa * sb / n) / Math.Sqrt(va * vb) : 0;
+        }
+        return faces.Count > 0 ? sum / faces.Count : 0;
     }
 
     /// <summary>One frame, grey, at <paramref name="t"/>, full size.</summary>

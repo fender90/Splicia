@@ -52,7 +52,7 @@ static class Program
                 case "ui": CropUiTests.Run(); break;
                 case "brand": BrandUiTests.Run(); break;
                 case "timeline": TimelineTests.Run(); break;
-                case "timelineui": TimelineUiTests.Run(); break;
+                case "timelineui": TimelineUiTests.Run(); TimelineUiTests.Stepping(); TimelineUiTests.NarrowClip(); break;
                 case "play": PlaybackTests.Run(); break;
                 case "faces": FaceTests.Run(); FaceTests.Window(); break;
                 default: Console.WriteLine($"unknown mode {mode}"); return 1;
@@ -116,6 +116,9 @@ static class Program
                                   "-vf \"crop=1278:718:0:0,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv,format=yuv420p10le\" " +
                                   "-color_primaries bt2020 -color_trc arib-std-b67 -colorspace bt2020nc " +
                                   "-c:v libx265 -preset ultrafast -x265-params log-level=error -tag:v hvc1 -an");
+        // A variable frame rate: the numbered-frame clip with every fifth frame left out (each of those gaps two frames
+        // long), in Matroska (timestamps in whole milliseconds, off the frame grid)
+        Make("t14_vfr.mkv", $"-i \"{Path.Combine(H.Vids, "t7_counter.mp4")}\" -t 4 -vf \"select='not(eq(mod(n\\,5)\\,4))'\" -fps_mode vfr -c:v libx264 -preset veryfast -crf 20 -an");
         // Sound files for the audio track: a 1 kHz tone (WAV) and a 300 Hz tone (MP3).
         Make("s1_tone.wav", "-f lavfi -i \"sine=f=1000:duration=3:sample_rate=44100\" -ac 2 -c:a pcm_s16le");
         Make("s2_low.mp3", "-f lavfi -i \"sine=f=300:duration=4:sample_rate=44100\" -ac 2 -c:a libmp3lame -b:a 192k");
