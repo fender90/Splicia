@@ -28,6 +28,56 @@ static class FaceTests
         H.Check(up.All(n => n == 7) && tilt.All(n => n == 3), $"faces found: [{string.Join(",", up)}] upright (7 crew), [{string.Join(",", tilt)}] tilted 15° (3 crew)");
         H.Check(finder.Count is >= 10 and <= 14, $"{finder.Count} faces in all (10 people; a few tracks may break)");
 
+        // 1b. Hard cases: in profile, turned away, looking down, partly covered (a gaiter, a mask). Each face (its middle,
+        // in the 1280-wide photo) must be under a cover at each moment; the photos pan up 10 pixels a second from 60.
+        string hardFile = Path.Combine(H.Vids, "t13_faces_hard.mp4");
+        var hardFaces = new (int X, int Y)[][]
+        {
+            new[] { (710, 370) },             // a gaiter over the nose, turned to the side, looking down
+            new[] { (826, 305) },             // seen from behind, face turned up and away, a mask
+            new[] { (940, 300) },             // looking down over someone, safety glasses
+            new[] { (430, 330), (840, 290) }, // seen from behind in near profile; facing
+            new[] { (315, 330), (615, 290) }, // in profile looking down; further back
+        };
+        sw.Restart();
+        using (var hardFinder = new FaceFinder(hardFile, 0).Start())
+        {
+            hardFinder.Completion.Wait(TimeSpan.FromMinutes(3));
+            double hs = sw.Elapsed.TotalSeconds;
+            int covered = 0, total = 0, most = 0;
+            var missed = new List<string>();
+            for (int i = 0; i < hardFaces.Length; i++)
+                foreach (double local in new[] { 0.5, 1.0, 1.5 })
+                {
+                    double t = 2 * i + local;
+                    var boxes = hardFinder.At(t);
+                    most = Math.Max(most, boxes.Count - hardFaces[i].Length);
+                    foreach (var (x, y) in hardFaces[i])
+                    {
+                        total++;
+                        var p = new PointF(x / 1280f, (y - 60 - 10 * (float)local) / 720f);
+                        if (boxes.Any(b => b.Contains(p))) covered++;
+                        else missed.Add($"photo {i + 1} face ({x},{y}) at {t:0.0} s");
+                    }
+                }
+            H.Check(hardFinder.Done && covered == total && most <= 2,
+                $"hard cases: {covered}/{total} faces covered ({hs:0.0} s for 10 s of video), at most {most} other covers" +
+                (missed.Count > 0 ? "; missed " + string.Join(", ", missed) : ""));
+
+            // ... exported pixelated: a picture of each, to look at (faces_hard_N.png)
+            using var hm = new MediaSource(hardFile, decoders: false);
+            string hardOut = Path.Combine(H.Out, "faces_hard.mp4");
+            var htl = TimelineTests.Placed(hm.Info, new[] { new Clip(1, 0, hm.Info.Duration, 0, TimelineTests.Cut) });
+            try
+            {
+                TimelineTests.Export(TimelineTests.Job(hm.Info, htl) with { Faces = new FaceEffect(hardFinder, FaceMode.Pixelate, 60, hm.Info) },
+                    new ExportSettings(ExportFormat.H264, ExportQuality.High, true, hardOut));
+                for (int i = 0; i < hardFaces.Length; i++)
+                    H.Ffmpeg($"-v error -y -ss {2 * i + 1} -i \"{hardOut}\" -frames:v 1 \"{Path.Combine(H.Out, $"faces_hard_{i + 1}.png")}\"");
+            }
+            catch (Exception ex) { H.Check(false, $"export, hard cases: {ex.Message}"); }
+        }
+
         // 2. Stored sideways: the same faces, turned back to the same places
         using (var ss = new MediaSource(sideways, decoders: false))
         using (var turned = new FaceFinder(sideways, ss.Info.Rotation).Start())

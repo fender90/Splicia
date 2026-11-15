@@ -46,6 +46,8 @@
     <!-- The face model, where the installed app has it (ffmpeg\faces) -->
     <None Include="faces\centerface.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" Link="ffmpeg\faces\centerface.onnx" />
+    <None Include="faces\rtmo-s.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" Link="ffmpeg\faces\rtmo-s.onnx" />
     <!-- FFmpeg runtime (DLLs + ffmpeg.exe) next to the built exe, for running from bin\ or publish\ -->
     <None Include="ffmpeg\*.dll;ffmpeg\ffmpeg.exe;ffmpeg\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" Link="ffmpeg\%(Filename)%(Extension)" />

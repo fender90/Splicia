@@ -21,6 +21,7 @@
     <EmbeddedResource Include="..\..\THIRD-PARTY-NOTICES.txt" LogicalName="Splicia.THIRD-PARTY-NOTICES.txt" />
     <None Include="..\..\ffmpeg\*.dll;..\..\ffmpeg\ffmpeg.exe;..\..\ffmpeg\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" Link="ffmpeg\%(Filename)%(Extension)" />
     <None Include="..\..\faces\centerface.onnx" CopyToOutputDirectory="PreserveNewest" Link="ffmpeg\faces\centerface.onnx" />
+    <None Include="..\..\faces\rtmo-s.onnx" CopyToOutputDirectory="PreserveNewest" Link="ffmpeg\faces\rtmo-s.onnx" />
     <None Include="assets\*.jpg" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

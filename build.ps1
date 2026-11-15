@@ -36,7 +36,7 @@ try {
     foreach ($f in $ffFiles + 'LICENSE.txt') {
         [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $PSScriptRoot "ffmpeg\$f"), $f, 'Optimal')
     }
-    $faces = @{ 'faces/centerface.onnx' = 'faces\centerface.onnx'; 'faces/onnxruntime.dll' = 'publish\onnxruntime.dll';
+    $faces = @{ 'faces/centerface.onnx' = 'faces\centerface.onnx'; 'faces/rtmo-s.onnx' = 'faces\rtmo-s.onnx'; 'faces/onnxruntime.dll' = 'publish\onnxruntime.dll';
                 'faces/onnxruntime_providers_shared.dll' = 'publish\onnxruntime_providers_shared.dll' }
     foreach ($e in $faces.GetEnumerator()) {
         $src = Join-Path $PSScriptRoot $e.Value

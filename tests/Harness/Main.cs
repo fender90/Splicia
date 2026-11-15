@@ -106,6 +106,11 @@ static class Program
             Make("t11_faces_sideways.mp4", $"-display_rotation:v:0 -90 -i \"{sideTmp}\" -c copy");
             File.Delete(sideTmp);
         }
+        // Hard cases (assets\, NASA): faces in profile, turned away, looking down, partly covered; 2 s each, panning slowly
+        var hard = new[] { "worker-gaiter.jpg", "worker-turned-away.jpg", "eye-exam.jpg", "interview.jpg", "station-meal.jpg" };
+        Make("t13_faces_hard.mp4", string.Join(" ", hard.Select(h => $"-loop 1 -framerate 30 -t 2 -i \"{Path.Combine(assets, h)}\"")) +
+                                   " -filter_complex \"" + string.Concat(hard.Select((_, i) => $"[{i}:v]scale=1280:-2,crop=1280:720:0:'60+t*10',setsar=1[v{i}];")) +
+                                   string.Concat(hard.Select((_, i) => $"[v{i}]")) + $"concat=n={hard.Length}:v=1,format=yuv420p\" -c:v libx264 -preset veryfast -crf 18 -r 30");
         // ... the upright part as 10-bit HDR (HLG, HEVC), at a size whose colour planes are an odd size
         Make("t12_faces_hlg.mov", $"-i \"{Path.Combine(H.Vids, "t10_faces.mp4")}\" -t 4 " +
                                   "-vf \"crop=1278:718:0:0,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc:range=tv,format=yuv420p10le\" " +
