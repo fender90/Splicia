@@ -12,13 +12,17 @@ static class ShotTests
 {
     static string S(double v) => v.ToString("0.######", CultureInfo.InvariantCulture);
 
+    /// <summary>A fresh folder the Save dialog's stand-in answers with (the name suggested, kept); the names asked about in <see cref="Asked"/>.</summary>
     internal static string Folder(MainForm form, string name)
     {
         string dir = Path.Combine(H.Out, name);
         if (Directory.Exists(dir)) Directory.Delete(dir, true);
-        Set(form, "_shotDir", dir);
+        Directory.CreateDirectory(dir);
+        Set(form, "_askShotPath", (Func<string, string?>)(suggested => { Asked.Add(suggested); return Path.Combine(dir, suggested); }));
         return dir;
     }
+
+    internal static readonly List<string> Asked = new();
 
     /// <summary>Presses the button and waits for the picture: the newest PNG in <paramref name="dir"/>, or null.</summary>
     internal static string? Shoot(MainForm form, string dir)
@@ -69,18 +73,34 @@ static class ShotTests
         var pic = Rgb(png);
         double exact = Diff(pic, Rgb(counter, shown, fd)), next = Diff(pic, Rgb(counter, shown + fd, fd)), prev = Diff(pic, Rgb(counter, shown - fd, fd));
         H.Check(w == 1280 && h == 720 && bits == 8 && type == 2 && exact < 1.5 && next > exact + 2 && prev > exact + 2
-            && Path.GetFileName(png) == "t7_counter 00-00-02.000.png" && ((string?)Get(form, "_toast"))?.StartsWith("Saved ") == true,
-            $"player: {Path.GetFileName(png)}, {w}×{h} {bits}-bit RGB, the frame on screen (differs by {exact:0.00} from it, {prev:0.0} and {next:0.0} from its neighbours); \"{Get(form, "_toast")}\"");
-        string? again = Shoot(form, dir);
-        H.Check(again != null && Path.GetFileName(again) == "t7_counter 00-00-02.000 (2).png", $"again at the same time: {Path.GetFileName(again)}");
-        // Names are taken as they're chosen: two shots at once don't get the same one
-        var unique = typeof(MainForm).GetMethod("Unique", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
-        string stem = Path.Combine(dir, "at once");
-        var n1 = (string)unique.Invoke(null, new object[] { stem, ".png" })!;
-        var n2 = (string)unique.Invoke(null, new object[] { stem, ".png" })!;
-        H.Check(n1 != n2 && File.Exists(n1) && File.Exists(n2), $"two names chosen at once: {Path.GetFileName(n1)}, {Path.GetFileName(n2)}");
-        File.Delete(n1);
-        File.Delete(n2);
+            && Asked.LastOrDefault() == "t7_counter 00-00-02.000.png" && ((string?)Get(form, "_toast"))?.StartsWith("Saved ") == true,
+            $"player: asked where, suggesting \"{Asked.LastOrDefault()}\"; {w}×{h} {bits}-bit RGB, the frame on screen (differs by {exact:0.00} from it, {prev:0.0} and {next:0.0} from its neighbours); \"{Get(form, "_toast")}\"");
+
+        // Cancelling the Save dialog saves nothing (and says nothing)
+        var answer = Get(form, "_askShotPath");
+        Set(form, "_askShotPath", (Func<string, string?>)(_ => null));
+        int had = Directory.GetFiles(dir).Length;
+        string toastBefore = (string?)Get(form, "_toast") ?? "";
+        Shoot(form, dir);
+        H.Check(Directory.GetFiles(dir).Length == had && (string?)Get(form, "_toast") == toastBefore, "cancelling the Save dialog saves nothing");
+        Set(form, "_askShotPath", answer);
+
+        // The real dialog, set up (not shown): the name suggested, an overwrite prompt, files only
+        var dialog = SaveDialog.Create("Save the picture", "a name.png", Guid.NewGuid(), Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "PNG picture", ".png");
+        dialog.GetFileName(out string suggestedName);
+        dialog.GetOptions(out uint options);
+        System.Runtime.InteropServices.Marshal.ReleaseComObject(dialog);
+        H.Check(suggestedName == "a name.png" && (options & 0x2) != 0 && (options & 0x4) != 0 && (options & 0x40) != 0,
+            $"the Save dialog is set up: \"{suggestedName}\", options 0x{options:X} (overwrite prompt, its own extension, files only)");
+
+        // A save that fails (no frame there: past the end) leaves the file it was to replace as it was, and no work file
+        string keep = Path.Combine(dir, "keep.png");
+        File.WriteAllBytes(keep, new byte[] { 1, 2, 3 });
+        string? failed = null;
+        try { Exporter.SaveFrameAsync((MediaInfo)Get(form, "_info")!, 1000, 0, null, null, keep).Wait(); }
+        catch (AggregateException ex) { failed = ex.InnerException?.Message; }
+        H.Check(failed != null && File.ReadAllBytes(keep).SequenceEqual(new byte[] { 1, 2, 3 }) && Directory.GetFiles(dir, ".splicia-*").Length == 0,
+            $"a failed save keeps the file it was replacing: \"{failed}\"");
 
         // The editor: turned right and cropped (half the width, 60% of the height of the picture as shown)
         Call(form, "SetEditing", true);

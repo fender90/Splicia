@@ -679,7 +679,9 @@ static class Exporter
         // Accurate rounding and every pixel's own colour (the fast path repeats each colour sample over four pixels)
         chain.Add($"scale={size}:flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp:in_color_matrix={matrix},setsar=1,format={(deep ? "rgb48be" : "rgb24")}");
         graph += string.Join(",", chain);
-        a.AddRange(new[] { "-filter_complex", graph, "-frames:v", "1", "-c:v", "png", "-update", "1", output });
+        // Written beside it under another name, then put in its place: a file being replaced stays if this fails
+        string temp = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(output))!, $".splicia-{Guid.NewGuid():N}.png");
+        a.AddRange(new[] { "-filter_complex", graph, "-frames:v", "1", "-c:v", "png", "-update", "1", temp });
 
         var psi = new ProcessStartInfo(FFmpegRuntime.FFmpegExe)
         {
@@ -705,14 +707,20 @@ static class Exporter
         catch (OperationCanceledException)
         {
             try { p.Kill(); p.WaitForExit(5000); } catch (InvalidOperationException) { }
-            TryDelete(output);
+            TryDelete(temp);
             throw;
         }
-        if (p.ExitCode != 0 || !File.Exists(output))
+        if (p.ExitCode != 0 || !File.Exists(temp) || new FileInfo(temp).Length == 0)
         {
-            TryDelete(output);
+            TryDelete(temp);
             string why = (await errors.ConfigureAwait(false)).Trim();
             throw new InvalidOperationException("Couldn't save the picture" + (why.Length > 0 ? ": " + why : "."));
+        }
+        try { File.Move(temp, output, overwrite: true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            TryDelete(temp);
+            throw new InvalidOperationException("Couldn't save the picture: " + ex.Message);
         }
     }
 

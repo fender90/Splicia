@@ -842,7 +842,7 @@ sealed partial class MainForm : Form
         Hit.Crop => _cropping ? "Finish cropping  (C or Enter)" : HasCrop ? "Change the crop  (C)" : "Crop  (C)",
         Hit.Vol => _muted ? "Unmute  (M)" : "Mute  (M)",
         Hit.VolSlider => "Volume  (↑ / ↓)",
-        Hit.Shot => "Screenshot: save this frame as a full-size picture",
+        Hit.Shot => "Screenshot: save this frame as a full-size picture…",
         Hit.Loop => _loop ? "Loop: on" : "Loop: off",
         Hit.Full => _fullscreen ? "Exit fullscreen  (F)" : "Fullscreen  (F)",
         Hit.More => "More",
@@ -1771,7 +1771,6 @@ sealed partial class MainForm : Form
         if (_editing) PopulateEditItems(Item, has, edit);
         _menu.Items.Add(Item((_loop ? "✓  " : "     ") + "Loop", ToggleLoop, null, has));
         _menu.Items.Add(Item("Reset zoom", ResetZoom, "Ctrl+0", _zoom > 1f));
-        _menu.Items.Add(Item("Show screenshots", OpenShotFolder));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(Item("Keyboard shortcuts", () => { RevealCursor(); using var dlg = new ShortcutsDialog(); dlg.ShowDialog(this); }));
         _menu.Items.Add(Item("Open crash log folder", CrashLog.OpenFolder));
