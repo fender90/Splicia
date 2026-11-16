@@ -233,6 +233,30 @@ static class FaceTests
         TimelineUiTests.Click(form, TimelineUiTests.Centre(Rectangle.Round(Item(2)))); // Pixelate
         var finder = (FaceFinder?)TimelineUiTests.Get(form, "_finder");
         H.Check(TimelineUiTests.Get(form, "_faceMode")!.ToString() == "Pixelate" && finder != null, "Pixelate starts finding faces");
+
+        // A screenshot ahead of the search waits for it there, and hides the faces
+        if (finder != null)
+        {
+            TimelineUiTests.Call(form, "GoTo", 6.5);
+            TimelineUiTests.Pump(0.3);
+            string aheadDir = ShotTests.Folder(form, "shots_ahead");
+            TimelineUiTests.Set(form, "_shot", null);
+            bool ahead = finder.Progress * 8 < 7.5;
+            TimelineUiTests.Click(form, TimelineUiTests.Centre(TimelineUiTests.Button(form, "Shot")));
+            string waitToast = (string?)TimelineUiTests.Get(form, "_toast") ?? "";
+            ((Task?)TimelineUiTests.Get(form, "_shot"))?.Wait(TimeSpan.FromSeconds(90));
+            TimelineUiTests.Pump(0.2);
+            string? aheadPng = Directory.Exists(aheadDir) ? Directory.GetFiles(aheadDir, "*.png").FirstOrDefault() : null;
+            if (aheadPng != null)
+            {
+                var src = Grey(file, 6.5, 1280, 720);
+                var pic = Grey(aheadPng, 0, 1280, 720);
+                var (aIn, aOut) = Compare(src, pic, 1280, 720, 1, finder.At(6.5));
+                H.Check(ahead && waitToast.StartsWith("Saving the picture once") && finder.At(6.5).Count == 3 && aIn.Detail < 0.45 && aOut.Change < 2,
+                    $"a screenshot ahead of the search (\"{waitToast}\") waits, then hides the 3 faces there: detail {aIn.Detail:P0}, the rest changed by {aOut.Change:0.00}");
+            }
+            else H.Check(false, "a screenshot ahead of the search is saved");
+        }
         var until = DateTime.UtcNow.AddMinutes(2);
         while (finder != null && !finder.Done && finder.Error == null && DateTime.UtcNow < until) TimelineUiTests.Pump(0.2);
         TimelineUiTests.Call(form, "GoTo", 2.0);
@@ -246,6 +270,19 @@ static class FaceTests
         H.Check(finder!.Done && status.Contains("faces found") && inside.Detail < 0.45 && outside.Change < 1,
             $"the paused frame shows the faces hidden: {status}, detail {inside.Detail:P0}, the rest changed by {outside.Change:0.00}");
         TimelineUiTests.Snap(form, "f1_faces_bar");
+
+        // A screenshot hides them too
+        string shotDir = ShotTests.Folder(form, "shots_faces");
+        string? shot = ShotTests.Shoot(form, shotDir);
+        if (shot != null)
+        {
+            var src = Grey(file, 2.0, 1280, 720);
+            var pic = Grey(shot, 0, 1280, 720);
+            var (sIn, sOut) = Compare(src, pic, 1280, 720, 1, finder.At(2.0));
+            H.Check(pic.Length == src.Length && sIn.Detail < 0.45 && sOut.Change < 2,
+                $"a screenshot hides them: detail in the faces down to {sIn.Detail:P0}, the rest changed by {sOut.Change:0.00}");
+        }
+        else H.Check(false, "a screenshot with faces hidden is saved");
 
         // The slider: 30%
         var slider = Item(3);

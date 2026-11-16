@@ -8,6 +8,7 @@ All notable changes to Splicia are listed here.
 
 - **A player first.** Videos open in a player: the picture, a compact timeline and the playback controls. Press **Edit** (or E) to open the editor, with the full timeline and every editing tool; **Done** takes you back to the player, with your edits.
 - **Hide faces.** In the editor, the Faces button blurs or pixelates every face in the video, found automatically: faces in profile, turned away, tilted or looking down, and faces partly covered (a mask, a scarf, glasses), found from the person's body when the face itself is hard to see. Pick Blur or Pixelate and set how strongly with the Amount slider. The preview hides faces as soon as they're found, and the export hides them the same way. Faces are found on your PC; nothing is uploaded.
+- **Screenshots.** The camera button, in the player and the editor, saves the frame on screen as a PNG at the video's full size and quality: turned, cropped and with faces hidden as the export would be, HDR brought to SDR, 16 bits a channel from 10-bit video. They go in Pictures\Splicia; ⋯ › Show screenshots opens the folder.
 
 ### Fixes
 

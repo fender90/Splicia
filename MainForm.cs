@@ -14,7 +14,7 @@ sealed partial class MainForm : Form
     enum Hit
     {
         None, Center, Ruler, Track, Clip, ClipFadeIn, ClipFadeOut, Junction, Music, MusicStart, MusicEnd, MusicFadeIn, MusicFadeOut,
-        MusicLane, TrimStart, TrimEnd, TrimGrip, Play, Prev, Next, Undo, Redo, Split, Trim, Delete, AddAudio, Faces, FaceBar, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Loop, Full, More,
+        MusicLane, TrimStart, TrimEnd, TrimGrip, Play, Prev, Next, Undo, Redo, Split, Trim, Delete, AddAudio, Faces, FaceBar, RotL, RotR, Crop, CropBar, CropArea, Vol, VolSlider, Shot, Loop, Full, More,
         Export, Edit, EditDone, Pin, Min, Max, Close, TrimApply, TrimCancel, Panel /* the panel's background, between its controls */,
     }
     enum Drag { None, Seek, Volume, Crop, ClipMove, MusicMove, MusicStart, MusicEnd, FadeIn, FadeOut, TrimStart, TrimEnd, TrimMove, FaceAmount }
@@ -22,7 +22,7 @@ sealed partial class MainForm : Form
     static readonly Hit[] HitOrder =
     {
         Hit.FaceBar, Hit.CropBar, Hit.Min, Hit.Max, Hit.Close, Hit.TrimApply, Hit.TrimCancel, Hit.EditDone, Hit.Pin, Hit.Ruler /* the whole timeline */, Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete, Hit.Faces,
-        Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Edit, Hit.Center,
+        Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Vol, Hit.VolSlider, Hit.Shot, Hit.Loop, Hit.Full, Hit.More, Hit.Export, Hit.Edit, Hit.Center,
         Hit.CropArea,
     };
     const double HideAfterSeconds = 2.5;
@@ -93,8 +93,8 @@ sealed partial class MainForm : Form
         BackColor = Color.Black;
         DoubleBuffered = true;
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-        ClientSize = new Size(P(1100), P(700));
-        MinimumSize = new Size(P(1052), P(600));
+        ClientSize = new Size(P(1180), P(720));
+        MinimumSize = new Size(P(1102), P(600));
         StartPosition = FormStartPosition.CenterScreen;
         KeyPreview = true;
         AllowDrop = true;
@@ -345,11 +345,13 @@ sealed partial class MainForm : Form
             Hit.Pin => new Rectangle(pr.Right - Pad - P(30), pr.Top + P(8), P(30), P(28)),
             Hit.TrimApply => TrimButtonRect(apply: true),
             Hit.TrimCancel => TrimButtonRect(apply: false),
+            // The player's own group (in the editor too): volume, screenshot, loop, fullscreen, more
             Hit.More => new Rectangle(moreX, rowY, bs, bs),
             Hit.Full => new Rectangle(moreX - step, rowY, bs, bs),
             Hit.Loop => new Rectangle(moreX - 2 * step, rowY, bs, bs),
-            Hit.VolSlider => new Rectangle(moreX - 2 * step - P(14) - P(96), rowY, P(96), bs),
-            Hit.Vol => new Rectangle(moreX - 2 * step - P(14) - P(96) - bs - P(2), rowY, bs, bs),
+            Hit.Shot => new Rectangle(moreX - 3 * step, rowY, bs, bs),
+            Hit.VolSlider => new Rectangle(moreX - 3 * step - P(14) - P(96), rowY, P(96), bs),
+            Hit.Vol => new Rectangle(moreX - 3 * step - P(14) - P(96) - bs - P(2), rowY, bs, bs),
             Hit.Min => new Rectangle(wb.Left, wb.Top, wb.Width / 3, wb.Height),
             Hit.Max => new Rectangle(wb.Left + wb.Width / 3, wb.Top, wb.Width / 3, wb.Height),
             Hit.Close => new Rectangle(wb.Left + 2 * wb.Width / 3, wb.Top, wb.Width - 2 * wb.Width / 3, wb.Height),
@@ -668,7 +670,7 @@ sealed partial class MainForm : Form
 
         bool has = _info != null;
         DrawVolumeSlider(g, has);
-        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Faces, Hit.Vol, Hit.Loop, Hit.Full, Hit.More, Hit.Pin })
+        foreach (var h in new[] { Hit.Play, Hit.Prev, Hit.Next, Hit.Undo, Hit.Redo, Hit.Split, Hit.Trim, Hit.Delete, Hit.AddAudio, Hit.RotL, Hit.RotR, Hit.Crop, Hit.Faces, Hit.Vol, Hit.Shot, Hit.Loop, Hit.Full, Hit.More, Hit.Pin })
         {
             var r = Rect(h);
             if (r.IsEmpty) continue; // the editing tools, in the player
@@ -695,6 +697,7 @@ sealed partial class MainForm : Form
                 case Hit.Crop: CropGlyph(g, gr, enabled && (HasCrop || _cropping) ? C(255, Theme.AccentHover) : col); break;
                 case Hit.Faces: FaceGlyph(g, gr, enabled && (_faceMode != FaceMode.Off || _faceBar) ? C(255, Theme.AccentHover) : col); break;
                 case Hit.Vol: SpeakerGlyph(g, gr, col, _muted || _volume == 0); break;
+                case Hit.Shot: ShotGlyph(g, gr, col); break;
                 case Hit.Loop: LoopGlyph(g, gr, col); break;
                 case Hit.Full: FullGlyph(g, gr, col, _fullscreen); break;
                 case Hit.More: MoreGlyph(g, gr, col); break;
@@ -839,6 +842,7 @@ sealed partial class MainForm : Form
         Hit.Crop => _cropping ? "Finish cropping  (C or Enter)" : HasCrop ? "Change the crop  (C)" : "Crop  (C)",
         Hit.Vol => _muted ? "Unmute  (M)" : "Mute  (M)",
         Hit.VolSlider => "Volume  (↑ / ↓)",
+        Hit.Shot => "Screenshot: save this frame as a full-size picture",
         Hit.Loop => _loop ? "Loop: on" : "Loop: off",
         Hit.Full => _fullscreen ? "Exit fullscreen  (F)" : "Fullscreen  (F)",
         Hit.More => "More",
@@ -877,10 +881,10 @@ sealed partial class MainForm : Form
         g.DrawString(text, _smallFont, tb, r.X + P(10), r.Y + P(4));
     }
 
-    void ShowToast(string text)
+    void ShowToast(string text, double seconds = 1.4)
     {
         _toast = text;
-        _toastUntil = Now + 1.4;
+        _toastUntil = Now + seconds;
         Invalidate();
     }
 
@@ -1623,6 +1627,7 @@ sealed partial class MainForm : Form
             case Hit.RotL: Rotate(-90); break;
             case Hit.RotR: Rotate(+90); break;
             case Hit.Vol: ToggleMute(); break;
+            case Hit.Shot: TakeScreenshot(); break;
             case Hit.Loop: ToggleLoop(); ShowToast(_loop ? "Loop: on" : "Loop: off"); break;
             case Hit.Full: ToggleFullscreen(); break;
             case Hit.More: ShowMenu(); break;
@@ -1766,6 +1771,7 @@ sealed partial class MainForm : Form
         if (_editing) PopulateEditItems(Item, has, edit);
         _menu.Items.Add(Item((_loop ? "✓  " : "     ") + "Loop", ToggleLoop, null, has));
         _menu.Items.Add(Item("Reset zoom", ResetZoom, "Ctrl+0", _zoom > 1f));
+        _menu.Items.Add(Item("Show screenshots", OpenShotFolder));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add(Item("Keyboard shortcuts", () => { RevealCursor(); using var dlg = new ShortcutsDialog(); dlg.ShowDialog(this); }));
         _menu.Items.Add(Item("Open crash log folder", CrashLog.OpenFolder));

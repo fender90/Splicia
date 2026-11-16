@@ -369,15 +369,7 @@ static class Exporter
                     var mask = faceMasks.FirstOrDefault(m => m.Start <= seg.From && seg.To <= m.End)
                         ?? throw new InvalidOperationException("The faces' mask doesn't cover a clip.");
                     a.AddRange(new[] { "-ss", S(CutPoint(info, seg.From) - mask.Start), inArgs[2], inArgs[3], "-i", mask.Path });
-                    string gray = pixFmt == "yuv420p" ? "gray" : "gray10le", ar = S(sar);
-                    int cw = (bw + 1) / 2, ch = (bh + 1) / 2;
-                    vtrim += $",format={pixFmt},split[fb{k}][fx{k}];[fx{k}]{faces.Filter(bw, bh)}[fe{k}];" +
-                             $"[{input}:v:0]{vt},fps={info.Rate}:round=near,format={gray},split=3[my{k}][mu{k}][mv{k}];" +
-                             $"[my{k}]scale={bw}:{bh}:flags=bilinear,setsar={ar}[ly{k}];" +
-                             $"[mu{k}]scale={cw}:{ch}:flags=bilinear,setsar={ar}[lu{k}];" +
-                             $"[mv{k}]scale={cw}:{ch}:flags=bilinear,setsar={ar}[lv{k}];" +
-                             $"[ly{k}][lu{k}][lv{k}]mergeplanes=map0s=0:map0p=0:map1s=1:map1p=0:map2s=2:map2p=0:format={pixFmt}[fm{k}];" +
-                             $"[fb{k}][fe{k}][fm{k}]maskedmerge";
+                    vtrim += "," + HideFaces(faces, pixFmt, bw, bh, sar, $"[{input}:v:0]{vt},fps={info.Rate}:round=near,", k.ToString(Inv));
                     input++;
                 }
             }
@@ -619,6 +611,109 @@ static class Exporter
         for (int first = 0; first < n; first += max) runs.Add((first, Math.Min(max, n - first)));
         if (runs.Count == 0) runs.Add((0, 0)); // no video clips: black under the audio track
         return runs;
+    }
+
+    static bool KnownColour(string v) => v.Length > 0 && v != "unknown" && v != "reserved";
+
+    /// <summary>
+    /// The filters (to follow a picture's chain) that hide faces in it: a blurred (or pixelated) copy merged in through the
+    /// faces' mask, a grey picture read by <paramref name="mask"/> (an input label and any filters, each followed by a
+    /// comma). The mask is made in the picture's own format, <paramref name="pixFmt"/> (its plane sizes and bit depth), so
+    /// the merge needs no conversion and 10-bit / HDR pictures stay 10-bit. <paramref name="k"/> keeps the labels apart.
+    /// </summary>
+    static string HideFaces(FaceEffect faces, string pixFmt, int bw, int bh, double sar, string mask, string k)
+    {
+        string gray = pixFmt == "yuv420p" ? "gray" : "gray10le", ar = S(sar);
+        int cw = (bw + 1) / 2, ch = (bh + 1) / 2;
+        return $"format={pixFmt},split[fb{k}][fx{k}];[fx{k}]{faces.Filter(bw, bh)}[fe{k}];" +
+               $"{mask}format={gray},split=3[my{k}][mu{k}][mv{k}];" +
+               $"[my{k}]scale={bw}:{bh}:flags=bilinear,setsar={ar}[ly{k}];" +
+               $"[mu{k}]scale={cw}:{ch}:flags=bilinear,setsar={ar}[lu{k}];" +
+               $"[mv{k}]scale={cw}:{ch}:flags=bilinear,setsar={ar}[lv{k}];" +
+               $"[ly{k}][lu{k}][lv{k}]mergeplanes=map0s=0:map0p=0:map1s=1:map1p=0:map2s=2:map2p=0:format={pixFmt}[fm{k}];" +
+               $"[fb{k}][fe{k}][fm{k}]maskedmerge";
+    }
+
+    /// <summary>
+    /// One frame of the file as a PNG, at full size: the frame starting at <paramref name="time"/> (the file's), with
+    /// faces hidden, turned and cropped as the export is, its pixels made square, HDR brought to SDR (as the preview and
+    /// an H.264 export show it); lossless, 16 bits a channel from a 10-bit or HDR file, else 8.
+    /// </summary>
+    public static async Task SaveFrameAsync(MediaInfo info, double time, int rotation, RectangleF? crop, FaceEffect? faces, string output,
+        CancellationToken ct = default)
+    {
+        bool turned = info.Rotation % 180 == 90;
+        int bw = turned ? info.Height : info.Width, bh = turned ? info.Width : info.Height;
+        double sar = turned ? 1 / info.Sar : info.Sar;
+        bool deep = info.BitDepth > 8 || info.IsHdr;
+        var a = new List<string> { "-hide_banner", "-nostdin", "-y", "-loglevel", "error" };
+        // Seeking just before it (a millisecond: frames of a varying rate can come closer than the average frame
+        // length): the first frame from there is this one. Both read the same timestamps.
+        a.AddRange(new[] { "-ss", S(Math.Max(0, time - Math.Min(info.FrameDuration / 2, 0.001))), "-i", info.Path });
+        byte[]? mask = null;
+        var chain = new List<string>();
+        string graph = "[0:v:0]";
+        if (faces != null)
+        {
+            // The faces' mask for this frame, full size, from stdin
+            mask = new byte[bw * bh];
+            faces.DrawMask(mask, bw, bh, time, info.Rotation);
+            a.AddRange(new[] { "-f", "rawvideo", "-pix_fmt", "gray", "-s", $"{bw}x{bh}", "-i", "-" });
+            graph += HideFaces(faces, deep ? "yuv420p10le" : "yuv420p", bw, bh, sar, "[1:v:0]", "0") + ",";
+        }
+        if (info.IsHdr)
+            chain.Add("zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=full");
+        switch (rotation)
+        {
+            case 90: chain.Add("transpose=clock"); break;
+            case 180: chain.Add("hflip,vflip"); break;
+            case 270: chain.Add("transpose=cclock"); break;
+        }
+        if (crop is RectangleF c)
+            chain.Add($"crop=w=max(1\\,trunc(iw*{S(c.Width)})):h=max(1\\,trunc(ih*{S(c.Height)})):x=trunc(iw*{S(c.X)}):y=trunc(ih*{S(c.Y)})");
+        // Square pixels: wider or taller (never smaller) for a picture stored squeezed. The colours as the preview has
+        // them: an HD picture that doesn't say is BT.709 (ffmpeg would take BT.601).
+        double sarShown = rotation % 180 == 90 ? 1 / sar : sar;
+        string size = Math.Abs(sarShown - 1) <= 1e-3 ? "iw:ih" : sarShown > 1 ? "trunc(iw*sar+0.5):ih" : "iw:trunc(ih/sar+0.5)";
+        string matrix = info.IsHdr || KnownColour(info.ColorSpace) ? "auto" : info.Height >= 720 ? "bt709" : "bt601";
+        // Accurate rounding and every pixel's own colour (the fast path repeats each colour sample over four pixels)
+        chain.Add($"scale={size}:flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp:in_color_matrix={matrix},setsar=1,format={(deep ? "rgb48be" : "rgb24")}");
+        graph += string.Join(",", chain);
+        a.AddRange(new[] { "-filter_complex", graph, "-frames:v", "1", "-c:v", "png", "-update", "1", output });
+
+        var psi = new ProcessStartInfo(FFmpegRuntime.FFmpegExe)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = mask != null, RedirectStandardError = true,
+            StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = FFmpegRuntime.Directory,
+        };
+        foreach (var x in a) psi.ArgumentList.Add(x);
+        using var p = Process.Start(psi)!;
+        var errors = p.StandardError.ReadToEndAsync(ct);
+        try
+        {
+            if (mask != null)
+            {
+                try
+                {
+                    await p.StandardInput.BaseStream.WriteAsync(mask, ct).ConfigureAwait(false);
+                    p.StandardInput.Close();
+                }
+                catch (IOException) { } // ffmpeg stopped reading: what it says is the reason
+            }
+            await p.WaitForExitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            try { p.Kill(); p.WaitForExit(5000); } catch (InvalidOperationException) { }
+            TryDelete(output);
+            throw;
+        }
+        if (p.ExitCode != 0 || !File.Exists(output))
+        {
+            TryDelete(output);
+            string why = (await errors.ConfigureAwait(false)).Trim();
+            throw new InvalidOperationException("Couldn't save the picture" + (why.Length > 0 ? ": " + why : "."));
+        }
     }
 
     /// <summary>

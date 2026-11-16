@@ -52,7 +52,7 @@ static class Program
                 case "ui": CropUiTests.Run(); break;
                 case "brand": BrandUiTests.Run(); break;
                 case "timeline": TimelineTests.Run(); break;
-                case "timelineui": TimelineUiTests.Run(); TimelineUiTests.Stepping(); TimelineUiTests.NarrowClip(); break;
+                case "timelineui": TimelineUiTests.Run(); TimelineUiTests.Stepping(); TimelineUiTests.NarrowClip(); ShotTests.Run(); break;
                 case "play": PlaybackTests.Run(); break;
                 case "faces": FaceTests.Run(); FaceTests.Window(); break;
                 default: Console.WriteLine($"unknown mode {mode}"); return 1;

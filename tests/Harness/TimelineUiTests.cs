@@ -496,11 +496,18 @@ static class TimelineUiTests
         Pump(0.4);
         Rectangle Btn(string h) => (Rectangle)Call(form, "Rect", Enum.Parse(typeof(MainForm).GetNestedType("Hit", Any)!, h))!;
         int Gap(string a, string b) => Btn(b).Left - Btn(a).Right;
-        // Groups: playback | undo, redo | the tools (split … crop, evenly spaced)
+        // Groups: playback | undo, redo | the tools (split … faces, evenly spaced) | the player's (volume, screenshot, loop,
+        // fullscreen, more), apart by at least a group's gap, pinned or not
         H.Check(Gap("Next", "Undo") > Gap("Prev", "Next") && Gap("Redo", "Split") > Gap("Undo", "Redo") && Gap("AddAudio", "RotL") == Gap("Split", "Trim") && Gap("Trim", "Delete") == Gap("Split", "Trim")
-            && Gap("Crop", "Vol") >= 4,
-            $"smallest window: undo {Btn("Undo")}, add sound {Btn("AddAudio")}, crop {Btn("Crop")}, volume {Btn("Vol")}");
+            && Gap("Faces", "Vol") >= 16 && Gap("VolSlider", "Shot") > Gap("Shot", "Loop") && Gap("Shot", "Loop") == Gap("Loop", "Full"),
+            $"smallest window: undo {Btn("Undo")}, add sound {Btn("AddAudio")}, faces {Btn("Faces")}, volume {Btn("Vol")}, screenshot {Btn("Shot")}");
         Snap(form, "u7_smallest_window");
+        Key(form, Keys.P);
+        Pump(0.2);
+        int floating = Gap("Faces", "Vol");
+        Key(form, Keys.P);
+        Pump(0.2);
+        H.Check(floating >= 16 && (bool)Get(form, "_pinned")!, $"smallest window, unpinned: {floating} px between the tools and the volume");
 
         // Done goes back to the player (the edits stay).
         var edited = Tl(form);
@@ -520,7 +527,7 @@ static class TimelineUiTests
         form.Close();
     }
 
-    static MainForm OpenOffscreen(string name)
+    internal static MainForm OpenOffscreen(string name)
     {
         var form = new MainForm(null) { StartPosition = FormStartPosition.Manual, Location = new Point(-31900, -31900), ClientSize = new Size(1280, 860) };
         ShowWindow(form.Handle, 4); // SW_SHOWNOACTIVATE
